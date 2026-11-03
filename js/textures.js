@@ -8,8 +8,6 @@ const cache = new Map();
 function cached(key, factory) {
   if (cache.has(key)) return cache.get(key);
   const value = factory();
-  // 纹理身份：贴图名 = 生成参数键。审计据此区分「只有贴图不同」的两份材质，
-  // 也让调试时能一眼看出某个材质用的是哪一张程序化贴图。
   if (value) value.name = key;
   cache.set(key, value);
   return value;
@@ -69,23 +67,6 @@ function fbm(x, y, octaves = 4, seed = 0, lacunarity = 2.0, gain = 0.5) {
   return sum / Math.max(norm, 1e-6);
 }
 
-/** 周期性 fbm（用于可平铺纹理） */
-function tileFbm(x, y, period, octaves = 4, seed = 0) {
-  let sum = 0;
-  let amp = 0.5;
-  let freq = 1;
-  let norm = 0;
-  for (let i = 0; i < octaves; i++) {
-    const p = period * freq;
-    const nx = valueNoise((x % p) / p * 64 * freq, (y % p) / p * 64 * freq, seed + i * 613);
-    sum += nx * amp;
-    norm += amp;
-    amp *= 0.5;
-    freq *= 2;
-  }
-  return sum / Math.max(norm, 1e-6);
-}
-
 function mix(a, b, t) {
   return a + (b - a) * t;
 }
@@ -94,7 +75,6 @@ function rgbOf(hex) {
   return { r: (hex >> 16) & 255, g: (hex >> 8) & 255, b: hex & 255 };
 }
 
-/** 逐像素写入：painter(x, y) 返回 [r,g,b] */
 function fillPixels(canvas, painter) {
   const ctx = canvas.getContext('2d');
   const w = canvas.width;
@@ -117,7 +97,6 @@ function fillPixels(canvas, painter) {
 
 /* ------------------------------------------------------------------ 三渲二渐变带 */
 
-/** 生成卡通色阶渐变贴图（MeshToonMaterial.gradientMap） */
 export function gradientMap(steps = 4) {
   return cached(`grad-${steps}`, () => {
     const n = Math.max(2, steps | 0);
@@ -134,43 +113,93 @@ export function gradientMap(steps = 4) {
   });
 }
 
-/* ------------------------------------------------------------------ 天空 */
+/* ------------------------------------------------------------------ 天空（林隙柔和天光 + 三重幽深森林群山与云雾天穹） */
 
-/** 程序化阴天天空（等距柱状投影，供背景与 PMREM 环境）：雨后云层，无太阳光晕 */
 export function skyCanvas(size = 1024) {
   return cached(`sky-${size}`, () => {
     const canvas = makeCanvas(size);
-    const top = rgbOf(PALETTE.skyTop);
-    const mid = rgbOf(PALETTE.skyMid);
-    const horizon = rgbOf(PALETTE.skyHorizon);
+    const zenith = { r: 128, g: 158, b: 138 };
+    const mist = { r: 96, g: 126, b: 106 };
+    const farPeak = { r: 62, g: 92, b: 74 };
+    const midRidge = { r: 44, g: 72, b: 56 };
+    const nearForest = { r: 32, g: 56, b: 42 };
+    const valleyFog = { r: 98, g: 128, b: 108 };
+
     fillPixels(canvas, (x, y, w, h) => {
       const u = x / w;
       const v = y / h;
-      let r;
-      let g;
-      let b;
-      if (v < 0.45) {
-        const t = v / 0.45;
-        r = mix(top.r, mid.r, t);
-        g = mix(top.g, mid.g, t);
-        b = mix(top.b, mid.b, t);
-      } else {
-        const t = (v - 0.45) / 0.55;
-        r = mix(mid.r, horizon.r, t);
-        g = mix(mid.g, horizon.g, t);
-        b = mix(mid.b, horizon.b, t);
+      const theta = u * Math.PI * 2;
+      const sx = Math.cos(theta) * 2.2 + 4.0;
+      const sz = Math.sin(theta) * 2.2 + 4.0;
+
+      // 底层：林冠上方柔和阴天薄雾天光（使高处树冠叶隙保留温润的雨后天光）
+      const skyT = clamp01(v / 0.46);
+      let r = mix(zenith.r, mist.r, skyT);
+      let g = mix(zenith.g, mist.g, skyT);
+      let b = mix(zenith.b, mist.b, skyT);
+
+      const canopyGlow = Math.exp(-Math.pow((v - 0.18) / 0.16, 2));
+      r += canopyGlow * 22;
+      g += canopyGlow * 28;
+      b += canopyGlow * 20;
+
+      // 第一重远山：连绵幽深的远方杉林群山（自 v > 0.28 起伏，封住中低空空白）
+      const mtn1 = 0.28
+        + 0.05 * Math.sin(theta * 3.0 + 0.8)
+        + 0.035 * Math.cos(theta * 5.0 - 0.4)
+        + 0.065 * (fbm(sx * 1.4, sz * 1.4, 4, 31) - 0.5);
+      const cedarTip1 = (fbm(u * 140, v * 12, 3, 73) - 0.5) * 0.018;
+      if (v > mtn1 + cedarTip1) {
+        const depth1 = clamp01((v - (mtn1 + cedarTip1)) / 0.2);
+        const tex1 = fbm(u * 45, v * 32, 4, 101);
+        const mr = mix(farPeak.r, valleyFog.r, (1 - depth1) * 0.45) + (tex1 - 0.5) * 12;
+        const mg = mix(farPeak.g, valleyFog.g, (1 - depth1) * 0.45) + (tex1 - 0.5) * 16;
+        const mb = mix(farPeak.b, valleyFog.b, (1 - depth1) * 0.45) + (tex1 - 0.5) * 12;
+        const edgeBlend = clamp01((v - (mtn1 + cedarTip1)) / 0.014);
+        r = mix(r, mr, edgeBlend);
+        g = mix(g, mg, edgeBlend);
+        b = mix(b, mb, edgeBlend);
       }
-      // 雨后层云：横向拉长的厚云带 + 细碎云絮，压暗顶棚、提亮地平线
-      const strata = fbm(u * 3.2 + v * 0.6, v * 7.5, 4, 21);
-      const wisp = fbm(u * 18, v * 26, 3, 43);
-      const cloud = clamp01((strata - 0.42) * 2.1) * (1 - v * 0.55);
-      const shade = cloud * 26 + (wisp - 0.5) * 9;
-      const lift = Math.pow(clamp01(v - 0.62) / 0.38, 1.7) * 14;
-      return [
-        clampByte(r - shade + lift),
-        clampByte(g - shade * 0.92 + lift),
-        clampByte(b - shade * 0.78 + lift * 0.8)
-      ];
+
+      // 山腰漂浮的林间云雾带
+      const mistBandY = 0.36 + 0.025 * Math.sin(theta * 2.0 + 1.2);
+      const mistMask = Math.exp(-Math.pow((v - mistBandY) / 0.042, 2)) * clamp01(fbm(u * 12, v * 24, 4, 151) * 1.35 - 0.18);
+      r = mix(r, valleyFog.r + 18, mistMask * 0.6);
+      g = mix(g, valleyFog.g + 22, mistMask * 0.6);
+      b = mix(b, valleyFog.b + 18, mistMask * 0.6);
+
+      // 第二重中景深林山脊（覆盖 v > 0.35）
+      const mtn2 = 0.35
+        + 0.045 * Math.cos(theta * 4.0 + 1.5)
+        + 0.03 * Math.sin(theta * 7.0 - 0.9)
+        + 0.055 * (fbm(sx * 2.1, sz * 2.1, 4, 57) - 0.5);
+      const cedarTip2 = (fbm(u * 190, v * 16, 3, 89) - 0.5) * 0.02;
+      if (v > mtn2 + cedarTip2) {
+        const tex2 = fbm(u * 68, v * 48, 4, 127);
+        const trunk2 = Math.pow(clamp01(Math.sin(u * 420 + tex2 * 8) * 0.5 + 0.5), 3.0) * 7;
+        const mr = midRidge.r + (tex2 - 0.5) * 14 - trunk2;
+        const mg = midRidge.g + (tex2 - 0.5) * 18 - trunk2;
+        const mb = midRidge.b + (tex2 - 0.5) * 14 - trunk2;
+        const edgeBlend = clamp01((v - (mtn2 + cedarTip2)) / 0.012);
+        r = mix(r, mr, edgeBlend);
+        g = mix(g, mg, edgeBlend);
+        b = mix(b, mb, edgeBlend);
+      }
+
+      // 第三重近景幽深密林山体（覆盖 v > 0.42 直至地平线以下）
+      const mtn3 = 0.42
+        + 0.035 * Math.sin(theta * 5.0 + 2.4)
+        + 0.05 * (fbm(sx * 2.8, sz * 2.8, 4, 83) - 0.5);
+      const cedarTip3 = (fbm(u * 240, v * 20, 3, 113) - 0.5) * 0.022;
+      if (v > mtn3 + cedarTip3) {
+        const tex3 = fbm(u * 90, v * 64, 4, 163);
+        const edgeBlend = clamp01((v - (mtn3 + cedarTip3)) / 0.012);
+        r = mix(r, nearForest.r + (tex3 - 0.5) * 10, edgeBlend);
+        g = mix(g, nearForest.g + (tex3 - 0.5) * 14, edgeBlend);
+        b = mix(b, nearForest.b + (tex3 - 0.5) * 10, edgeBlend);
+      }
+
+      return [clampByte(r), clampByte(g), clampByte(b)];
     });
     return canvas;
   });
@@ -182,7 +211,6 @@ function clampByte(v) {
 
 /* ------------------------------------------------------------------ 木材 */
 
-/** 老木料：木纹、年轮错位、结节、磕碰 */
 export function woodTexture({
   size = 1024,
   base = 0x9c7b58,
@@ -205,7 +233,7 @@ export function woodTexture({
       const fine = fbm(x / w * 90, y / h * 8 + plankIndex * 5, 3, seed + 31);
       const seam = localY < 0.035 || localY > 0.965 ? 1 : 0;
       const knot = Math.exp(-Math.pow((x / w - hash2(plankIndex, 3, seed)) * 26, 2) - Math.pow((localY - 0.5) * 16, 2));
-      let t = grain * 0.45 + fine * 0.35 + knot * 0.4;
+      const t = grain * 0.45 + fine * 0.35 + knot * 0.4;
       let r = mix(cBase.r, cLight.r, Math.max(0, t - 0.45) * 1.6);
       let g = mix(cBase.g, cLight.g, Math.max(0, t - 0.45) * 1.6);
       let b = mix(cBase.b, cLight.b, Math.max(0, t - 0.45) * 1.6);
@@ -218,7 +246,6 @@ export function woodTexture({
   });
 }
 
-/** 风化漆面：掉漆露底、雨水冲刷痕、局部青苔 */
 export function weatheredPaintTexture({
   size = 1024,
   paint = 0x9c7b58,
@@ -235,17 +262,23 @@ export function weatheredPaintTexture({
       const v = y / h;
       const u = x / w;
       const lossField = fbm(u * 7, v * 9, 5, seed);
-      const streak = fbm(u * 26, v * 2.2, 3, seed + 51);
-      const bottomBias = Math.pow(1 - v, 1.6);
-      const loss = clamp01(lossField * 0.7 + streak * 0.35 + bottomBias * 0.45 - 0.52);
-      const mossMask = clamp01((0.62 - v) * 1.8 * (0.45 + 0.55 * fbm(u * 14, v * 16, 4, seed + 91)) - 0.28);
+      const streak = fbm(u * 32, v * 2.4, 4, seed + 51);
+      const rainWash = Math.pow(clamp01(fbm(u * 48, v * 1.6, 3, seed + 73) - 0.36), 1.45);
+      const woodGrain = Math.sin(u * 140 + fbm(u * 8, v * 18, 3, seed + 19) * 6) * 0.5 + 0.5;
+      const bottomBias = Math.pow(1 - v, 1.5);
+      const loss = clamp01((lossField * 0.55 + streak * 0.45 + bottomBias * 0.38 - 0.44) * 0.88);
+      const mossMask = clamp01((0.42 - v) * 1.5 * (0.45 + 0.55 * fbm(u * 14, v * 16, 4, seed + 91)) - 0.3);
       let r = mix(cPaint.r, cBare.r, loss);
       let g = mix(cPaint.g, cBare.g, loss);
       let b = mix(cPaint.b, cBare.b, loss);
-      r = mix(r, cMoss.r, mossMask * 0.72);
-      g = mix(g, cMoss.g, mossMask * 0.72);
-      b = mix(b, cMoss.b, mossMask * 0.72);
-      const dust = Math.pow(v, 2.2) * 12;
+      const darkWash = rainWash * 0.44 + (1 - woodGrain) * 0.14;
+      r *= (1 - darkWash * 0.65);
+      g *= (1 - darkWash * 0.78);
+      b *= (1 - darkWash * 0.78);
+      r = mix(r, cMoss.r, mossMask * 0.55);
+      g = mix(g, cMoss.g, mossMask * 0.55);
+      b = mix(b, cMoss.b, mossMask * 0.55);
+      const dust = Math.pow(v, 2.2) * 8;
       return [clampByte(r + dust), clampByte(g + dust * 0.8), clampByte(b + dust * 0.5)];
     });
     return toTexture(canvas, { repeat: 1 });
@@ -281,7 +314,6 @@ export function barkTexture({ size = 512, base = 0x5a4636, crack = 0x3f3126, lig
 
 /* ------------------------------------------------------------------ 石材 / 砾石 */
 
-/** 碎石 / 参道砾石：粗颗粒 + 尘土 */
 export function gravelTexture({ size = 1024, stone = 0x8b8578, dust = 0xa39a8a, shade = 0x6f6a5f, density = 26 } = {}) {
   return cached(`gravel-${size}-${density}`, () => {
     const canvas = makeCanvas(size);
@@ -319,7 +351,6 @@ export function gravelTexture({ size = 1024, stone = 0x8b8578, dust = 0xa39a8a, 
 export function stoneTexture({ size = 512, base = 0x8d8b84, dark = 0x6c6a64, light = 0xa8a69d, seed = 13 } = {}) {
   return cached(`stone-${size}-${base}-${seed}`, () => {
     const canvas = makeCanvas(size);
-    const cBase = rgbOf(base);
     const cDark = rgbOf(dark);
     const cLight = rgbOf(light);
     fillPixels(canvas, (x, y, w, h) => {
@@ -328,10 +359,10 @@ export function stoneTexture({ size = 512, base = 0x8d8b84, dark = 0x6c6a64, lig
       const n = fbm(u * 10, v * 10, 5, seed);
       const vein = Math.abs(Math.sin((u + v) * 14 + n * 5));
       const t = clamp01(n * 0.7 + (1 - vein) * 0.3);
-      let r = mix(cDark.r, cLight.r, t);
-      let g = mix(cDark.g, cLight.g, t);
-      let b = mix(cDark.b, cLight.b, t);
-      const speck = hash2(Math.floor(u * 220), Math.floor(v * 220), seed + 5) > 0.965 ? 18 : 0;
+      const r = mix(cDark.r, cLight.r, t);
+      const g = mix(cDark.g, cLight.g, t);
+      const b = mix(cDark.b, cLight.b, t);
+      const speck = hash2(Math.floor(u * 220), Math.floor(v * 220), seed + 5) > 0.965 ? 14 : 0;
       return [clampByte(r + speck), clampByte(g + speck), clampByte(b + speck)];
     });
     return toTexture(canvas, { repeat: 1 });
@@ -340,7 +371,6 @@ export function stoneTexture({ size = 512, base = 0x8d8b84, dark = 0x6c6a64, lig
 
 /* ------------------------------------------------------------------ 泥土 / 沙石 */
 
-/** 参道侧泥土地：潮湿深泥 + 碎石 + 碎落叶 + 凹凸肌理 */
 export function soilTexture({
   size = 1024,
   base = PALETTE.soil,
@@ -372,7 +402,7 @@ export function soilTexture({
       let r = mix(cBase.r, cDark.r, clamp01(0.62 - clod) * 1.5);
       let g = mix(cBase.g, cDark.g, clamp01(0.62 - clod) * 1.5);
       let b = mix(cBase.b, cDark.b, clamp01(0.62 - clod) * 1.5);
-      const bump = (clod - 0.5) * 22 + (fine - 0.5) * 11;
+      const bump = (clod - 0.5) * 16 + (fine - 0.5) * 8;
       r += bump; g += bump * 0.95; b += bump * 0.85;
       if (grit) {
         const k = 0.35 + gritFacet * 0.45;
@@ -386,7 +416,6 @@ export function soilTexture({
   });
 }
 
-/** 溪底沙石：细砂 + 卵石颗粒 + 水流冲刷条纹 */
 export function sandTexture({
   size = 1024,
   base = PALETTE.streamSand,
@@ -410,7 +439,7 @@ export function sandTexture({
       let r = mix(cDark.r, cBase.r, clamp01(bed * 0.8 + flow * 0.3));
       let g = mix(cDark.g, cBase.g, clamp01(bed * 0.8 + flow * 0.3));
       let b = mix(cDark.b, cBase.b, clamp01(bed * 0.8 + flow * 0.3));
-      const sparkle = (grain - 0.5) * 26;
+      const sparkle = (grain - 0.5) * 18;
       r += sparkle; g += sparkle * 0.96; b += sparkle * 0.88;
       if (pebbleMask) {
         const k = 0.7 + pebble * 0.5;
@@ -467,12 +496,11 @@ export function mossTexture({ size = 512, base = 0x5d7a4a, wet = 0x46603a, seed 
       const u = x / w;
       const v = y / h;
       const tuft = fbm(u * 30, v * 30, 4, seed);
-      const damp = fbm(u * 7, v * 7, 3, seed + 17);
       const t = clamp01(tuft * 1.2 - 0.25);
       const r = mix(cWet.r, cBase.r, t);
       const g = mix(cWet.g, cBase.g, t);
       const b = mix(cWet.b, cBase.b, t);
-      const speck = hash2(Math.floor(u * 160), Math.floor(v * 160), seed) > 0.94 ? 14 : 0;
+      const speck = hash2(Math.floor(u * 160), Math.floor(v * 160), seed) > 0.94 ? 12 : 0;
       return [clampByte(r + speck), clampByte(g + speck * 0.8), clampByte(b + speck * 0.5)];
     });
     return toTexture(canvas, { repeat: 1 });
@@ -481,7 +509,6 @@ export function mossTexture({ size = 512, base = 0x5d7a4a, wet = 0x46603a, seed 
 
 /* ------------------------------------------------------------------ 水 / 薄雾 */
 
-/** 水面焦散 / 流动纹（作为 roughnessMap 与细节叠加） */
 export function waterDetailTexture({ size = 512, seed = 97 } = {}) {
   return cached(`water-${size}-${seed}`, () => {
     const canvas = makeCanvas(size);
@@ -498,26 +525,27 @@ export function waterDetailTexture({ size = 512, seed = 97 } = {}) {
   });
 }
 
-/** 尘埃粒子精灵（软圆点，低不透明度） */
-/** 林间薄雾幕：横向拉伸的浓淡絮状遮罩（alphaMap，灰度） */
+/** 林间薄雾幕：四周平滑衰减为 0 的絮状遮罩（绝不露出矩形硬边界） */
 export function mistVeilTexture({ size = 512, seed = 131 } = {}) {
   return cached(`mist-${size}-${seed}`, () => {
     const canvas = makeCanvas(size);
     fillPixels(canvas, (x, y, w, h) => {
       const u = x / w;
       const v = y / h;
-      const band = fbm(u * 2.4, v * 11, 4, seed);
-      const wisp = fbm(u * 9, v * 30, 3, seed + 19);
-      const soft = 1 - Math.pow(Math.abs(v - 0.5) * 2, 2.2);
-      const veil = clamp01((band * 0.72 + wisp * 0.34 - 0.34) * 1.9) * clamp01(soft * 1.25);
-      const val = clampByte(30 + veil * 205);
+      const band = fbm(u * 2.4, v * 8.5, 4, seed);
+      const wisp = fbm(u * 7.5, v * 18, 3, seed + 19);
+      const dx = (u - 0.5) * 2;
+      const dy = (v - 0.5) * 2;
+      const radial = Math.max(0, 1 - (dx * dx * 1.05 + dy * dy * 1.15));
+      const falloff = Math.pow(radial, 2.2);
+      const veil = clamp01((band * 0.68 + wisp * 0.32 - 0.28) * 1.8) * falloff;
+      const val = clampByte(veil * 215);
       return [val, val, val];
     });
     return toTexture(canvas, { srgb: false, repeat: 1 });
   });
 }
 
-/** 通用灰度噪声（roughnessMap / bumpMap 用） */
 export function noiseTexture({ size = 512, scale = 12, octaves = 4, seed = 5, contrast = 1 } = {}) {
   return cached(`noise-${size}-${scale}-${octaves}-${seed}-${contrast}`, () => {
     const canvas = makeCanvas(size);

@@ -1,9 +1,9 @@
 {
-  "name": "jp-au-station",
+  "name": "jp-torii-shrine",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "日系三渲二微缩景观：深山无人小站 · 秋日午后（模块化 Three.js Toon 场景）",
+  "description": "日系三渲二微缩景观：雨后深林 · 神社鸟居参道（模块化 Three.js Toon 场景）",
   "scripts": {
     "serve": "python3 -m http.server ${PORT:-7979}",
     "validate": "node tools/validate.mjs",

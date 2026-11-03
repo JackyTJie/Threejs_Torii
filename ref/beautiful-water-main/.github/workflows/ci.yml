@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linear-history:
+    name: Linear PR history
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Check out complete pull-request history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reject merge commits introduced by the pull request
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/check-linear-history.ps1 -BaseSha $env:BASE_SHA -HeadSha $env:HEAD_SHA
+
+  build:
+    name: Production build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build production bundle
+        run: bun run build
+
+      - name: Build GitHub Pages bundle
+        run: bun run build:pages
+
+      - name: Verify Pages-safe asset paths
+        run: bun run check:pages
+
+      - name: Test adaptive rendering policy
+        run: bun run quality:test
+
+  visual-regression:
+    name: Visual regression (${{ matrix.check }})
+    if: github.event_name == 'pull_request'
+    runs-on: windows-2022
+    timeout-minutes: 2
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: scene-matrix
+            suite: ci-scene
+          - check: fish-habituation
+            suite: fish-habituation
+          - check: renderer-parity
+            suite: renderer-parity
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run browser renderer regression harness
+        run: bun run visual:test
+        env:
+          VISUAL_SUITE: ${{ matrix.suite }}
+
+      - name: Upload visual evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ocean-visual-results-${{ matrix.check }}
+          path: |
+            visual-results/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 7

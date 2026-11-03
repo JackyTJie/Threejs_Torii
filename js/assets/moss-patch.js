@@ -51,7 +51,7 @@
  * = ex|cos|+ez|sin|，比直接拿 ex/ez 严格），放不下就缩尺寸 ⇒ 群落包围盒必然落在
  * 各自宿主盒内，宿主盒的并集必然包住整组包围盒，R6 可过。
  */
-import { MOSS_PATCHES, PATH, frontZ, clamp } from '../layout.js';
+import { MOSS_PATCHES, PATH, frontZ, pathBoundsAt, clamp } from '../layout.js';
 import { group, mesh, place, rng, rockGeometry, triplanarUv } from '../primitives.js';
 
 export const MOSS_PATCH_MODEL = { radius: 0.5, height: 0.15 };
@@ -107,8 +107,9 @@ function hostBox(p) {
   const foot = p.r * HOST_FOOT_FACTOR;
   if (p.host === 'step') {
     const fz = frontZ(p.step);
+    const { x0, x1 } = pathBoundsAt(fz - PATH.tread * 0.5);
     return {
-      x: [Math.max(PATH.x0, p.x - foot), Math.min(PATH.x1, p.x + foot)],
+      x: [Math.max(x0, p.x - foot), Math.min(x1, p.x + foot)],
       y: [p.y - 0.035, p.y + PATH.rise + 0.015],
       z: [fz - 0.02, fz + PATH.tread]
     };

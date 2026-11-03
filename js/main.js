@@ -1,9 +1,8 @@
-// 入口（S9.2）：全工程唯一使用 requestAnimationFrame 的模块。
+// 入口：全工程唯一使用 requestAnimationFrame 的模块。
 //
 // 这里只做四件事：建渲染器 / 场景 / 相机 / 灯光，把资产交给 scene-assembly 组装，
 // 然后每帧按固定顺序推进：相机 → 动画 → 后处理。任何建模、材质、动画参数都不在此处定义。
 // 画面里没有任何界面元素：不创建 DOM、不写文字、不加控件。
-import * as THREE from 'three';
 import { createRenderer, resizeRenderer, drawingBufferSize } from './renderer.js';
 import { createScene } from './scene.js';
 import { createCameraRig } from './camera.js';
@@ -14,7 +13,7 @@ import { createPostPipeline } from './post-pipeline.js';
 import { outlinePixelScale, setOutlinePixelScale } from './outline.js';
 import { animationElapsed, stepAnimations } from './animations/registry.js';
 
-/** 单帧最大步长：切后台 / 断点回来不补算大跳帧（落叶会瞬移、水面会跳波） */
+/** 单帧最大步长：切后台 / 断点回来不补算大跳帧 */
 const MAX_FRAME_DELTA = 1 / 20;
 
 /**
@@ -32,7 +31,6 @@ export function createApp(canvas, options = {}) {
   const assembly = assembleScene(scene, materials, { animations: options.animations !== false });
   const post = createPostPipeline(renderer, scene, camera);
 
-  const viewDirection = new THREE.Vector3();
   let rafId = 0;
   let lastTime = 0;
   let running = false;
@@ -40,7 +38,7 @@ export function createApp(canvas, options = {}) {
 
   /**
    * 描边的屏幕线宽依赖画面高度（world = px × dist / uPxScale）。
-   * 换窗口尺寸不刷新 = 换分辨率换线宽（AGENT.md：描边不能抖动、断裂）。
+   * 换窗口尺寸必须同步刷新像素尺度，保持描边锐利不断裂。
    */
   function syncOutlinePixelScale() {
     const { height } = drawingBufferSize(renderer);
@@ -66,18 +64,14 @@ export function createApp(canvas, options = {}) {
   /** 推进一帧（离线工具 / 审计可直接调用，不必依赖 requestAnimationFrame） */
   function step(dt) {
     const seconds = Math.max(0, Math.min(MAX_FRAME_DELTA, Number.isFinite(dt) ? dt : 0));
-    // 1) 相机（阻尼 / 键盘平移 / 静置缓慢环绕都在 camera.js 内）
+    // 1) 受限观景相机（阻尼 / 缩放耦合注视点 / 防穿地保护）
     rig.update(seconds);
 
-    // 2) 动画：尘埃需要视线方向才谈得上「逆光可见」
-    if (assembly.animations.dustMotes) {
-      camera.getWorldDirection(viewDirection);
-      if (Number.isFinite(viewDirection.x)) assembly.animations.dustMotes.setViewDirection(viewDirection);
-    }
+    // 2) 动态效果（微风枝叶摇曳 / 溪流细碎涟漪 / 积水微澜 / 林间薄雾漂移）
     const stepped = stepAnimations(seconds);
     if (stepped.errors.length) console.error('[animations]', stepped.errors.join(' | '));
 
-    // 3) 后处理：描边深度边缘 → 景深 → 辉光 → 合成 → 暖秋日调色
+    // 3) 后处理：描边深度边缘 → 景深 → 辉光 → 合成 → 雨后深林电影级调色
     post.render(animationElapsed());
     frames += 1;
   }

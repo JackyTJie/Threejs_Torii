@@ -1,6 +1,5 @@
-// 布局数据层：底座 / 参道石阶 / 溪谷水系 / 地形带 / 鸟居 / 全部放置点
-// 与 docs/LAYOUT_PLAN.md 严格一致；所有资产模块只从本文件取坐标。
-// 与文档的偏差、公式修正全部记录在 docs/ASSET_INDEX.md「布局决策」一节。
+// 布局数据层：底座 / 弯曲参道石阶 / 蜿蜒叠瀑溪谷水系 / 地形带 / 鸟居 / 全部放置点
+// 所有资产模块只从本文件取坐标与标高函数。
 import { PAD, LEVEL } from './config.js';
 import { fbm3 } from './primitives.js';
 
@@ -22,15 +21,10 @@ export function smoothstep(edge0, edge1, x) {
 /** 内容半宽：底座 ±16.0，四周留 0.1 m 唇边露明（所有资产包围盒硬边界） */
 export const CONTENT_HALF = PAD.half - 0.1;
 
-/**
- * 树冠安全半宽。
- * 林缘树木的冠幅若按自然半径外扩会越过 CONTENT_HALF 把枝叶悬到底座之外，
- * 因此 tree-kit 的每一个冠簇中心都被夹进 ±CANOPY_SAFE：展台边缘的树冠向内偏斜，
- * 这正是真实林缘树（向林内趋光）的姿态，比切在底座边缘更合理。
- */
+/** 树冠安全半宽 */
 export const CANOPY_SAFE = CONTENT_HALF - 0.2;
 
-/* ------------------------------------------------------------ 参道石阶 */
+/* ------------------------------------------------------------ 弯曲参道山路系统 */
 
 export const PATH = {
   centerX: 0.3,
@@ -45,14 +39,48 @@ export const PATH = {
   zTop: -4.4,
   topY: 4.8,
   grade: 0.29,
-  /** 上段石板坡道残段终点（z ≈ -7 处被两侧树木围合遮蔽） */
-  zUpper: -7.6,
-  /** 参道走廊净空判定区间（R2） */
-  corridorZ0: -8.0,
+  /** 上段石板坡道终点（穿过鸟居后曲率增大，顺右侧山势大弧度绕进山后隐没） */
+  zUpper: -9.2,
+  /** 参道走廊净空判定区间（R2：石阶底端到顶端区间禁止非参道资产落点） */
+  corridorZ0: -4.6,
   corridorZ1: 12.2
 };
 
 export const STAIRS = { steps: PATH.steps, rise: PATH.rise, tread: PATH.tread };
+
+/**
+ * 参道中心线 X(z) —— C¹ 连续的双段弧线：
+ * 1) 下中段（z ∈ [-0.9, 11.6]）：从右下方坡脚（x = +1.06）顺着山坡以优雅小弧线微向左抱弯（中段 x ≈ -0.02），
+ *    再自然回摆抵达前座鸟居（z = -0.9, x = +0.28）；
+ * 2) 上段（z < -0.9）：穿过鸟居后曲率明显增大（二次+三次项递增），
+ *    从后座鸟居（z = -2.2, x = +0.53）到石阶顶（z = -4.4, x = +1.36），
+ *    再沿上段石板路（z = -4.4 → -9.2）大幅向右弯曲至 x ≈ +5.5，自然绕到右侧山坡背后消失。
+ */
+export function pathCenterX(z) {
+  if (z >= -0.9) {
+    const u = clamp((PATH.zBottom - z) / (PATH.zBottom - (-0.9)), 0, 1);
+    return 0.82 * (1 - u) * (1 - u) + 2 * (-0.34) * u * (1 - u) + 0.28 * u * u;
+  }
+  const s = clamp(-0.9 - z, 0, 10.5);
+  return 0.28 + 0.0992 * s + 0.058 * s * s + 0.0038 * s * s * s;
+}
+
+/** 相对基准 centerX (0.3) 的横向偏移量 */
+export function pathShiftX(z) {
+  return pathCenterX(z) - PATH.centerX;
+}
+
+/** 任意 z 处的参道左右边界与中心 */
+export function pathBoundsAt(z) {
+  const cx = pathCenterX(z);
+  return { x0: cx - PATH.halfWidth, x1: cx + PATH.halfWidth, cx };
+}
+
+/** 参道切线朝向角（绕 Y 轴旋转角，供石阶、护墙、上段石板贴合曲线旋转） */
+export function pathYaw(z) {
+  const dx = pathCenterX(z - 0.25) - pathCenterX(z + 0.25);
+  return Math.atan2(-dx, 0.5);
+}
 
 /** 参道连续坡面：地形与石阶共用的基准坡面 */
 export function pathRampY(z) {
@@ -69,76 +97,100 @@ export function stepTopY(k) {
   return PATH.bottomY + PATH.rise * (k + 1);
 }
 
-/** 第 k 级石板包围盒（每级再沿 X 切成 2–3 块独立石板，切分逻辑在 stone-steps.js） */
+/** 第 k 级石板包围盒（随弯曲参道中心线偏移并留出旋转余量） */
 export function stepBox(k) {
   const top = stepTopY(k);
   const z = frontZ(k);
+  const cz = z - PATH.tread * 0.5;
+  const { x0, x1 } = pathBoundsAt(cz);
   return {
-    min: { x: PATH.x0, y: top - PATH.rise, z: z - PATH.tread },
-    max: { x: PATH.x1, y: top, z }
+    min: { x: x0 - 0.12, y: top - PATH.rise, z: z - PATH.tread - 0.05 },
+    max: { x: x1 + 0.12, y: top, z: z + 0.05 }
   };
 }
 
-/** 参道走廊遮罩（只随 x 变化：该列的地形标高在整个 z 上都是 pathRampY） */
+/** 参道走廊遮罩（随弯曲参道中心线计算） */
 export function pathCorridorMask(x, z) {
-  const dx = Math.max(PATH.x0 - x, 0, x - PATH.x1);
+  const { x0, x1 } = pathBoundsAt(z);
+  const dx = Math.max(x0 - x, 0, x - x1);
   if (dx <= 0) return 1;
   if (dx >= 1.2) return 0;
   return 1 - smoothstep(0, 1.2, dx);
 }
 
-/** 点是否落在石阶 / 上段坡道的铺装范围内 */
+/** 点是否落在弯曲石阶 / 上段坡道的铺装范围内 */
 export function pathInside(x, z) {
-  return x >= PATH.x0 && x <= PATH.x1 && z <= PATH.zBottom && z >= PATH.zUpper;
+  if (z > PATH.zBottom || z < PATH.zUpper) return false;
+  const { x0, x1 } = pathBoundsAt(z);
+  return x >= x0 && x <= x1;
 }
 
-/* ------------------------------------------------------------ 溪流曲线 */
+/* ------------------------------------------------------------ 蜿蜒叠瀑溪流系统 */
 
+/**
+ * 蜿蜒 S 型山涧浅溪折线：
+ * 在前中景紧邻石阶左护墙蜿蜒流淌，使竖屏与宽屏视角下左下方均能清晰观赏到弯弯绕绕的多级小瀑布、清澈泥底与漩涡波光。
+ */
 export const STREAM_PATH = [
-  { x: -8.2, z: -14.5 },
-  { x: -7.9, z: -11.0 },
-  { x: -7.4, z: -8.0 },
-  { x: -6.9, z: -5.0 },
-  { x: -6.4, z: -2.0 },
-  { x: -6.0, z: 1.0 },
-  { x: -5.7, z: 4.0 },
-  { x: -5.5, z: 7.0 },
-  { x: -5.35, z: 10.0 },
-  { x: -5.2, z: 13.5 }
+  { x: -6.6, z: -14.5 },
+  { x: -5.4, z: -12.0 },
+  { x: -6.2, z: -9.2 },
+  { x: -4.7, z: -6.4 },
+  { x: -5.4, z: -3.6 },
+  { x: -3.85, z: -0.8 },
+  { x: -4.45, z: 2.0 },
+  { x: -2.95, z: 4.8 },
+  { x: -3.45, z: 7.4 },
+  { x: -2.15, z: 10.0 },
+  { x: -2.65, z: 12.2 },
+  { x: -1.85, z: 14.5 }
+];
+
+/**
+ * 6 级山涧小瀑布 / 跌水石堰（段落ち / 小滝）：
+ * 溪水不再是平缓镜面斜坡，而是由 7 段清澈深潭与 6 级叠水小瀑布交替构成！
+ */
+export const STREAM_CASCADES = [
+  { z: -10.6, drop: 0.26, halfSpan: 0.34 },
+  { z: -6.6, drop: 0.28, halfSpan: 0.34 },
+  { z: -2.2, drop: 0.30, halfSpan: 0.35 },
+  { z: 1.8, drop: 0.32, halfSpan: 0.36 },
+  { z: 5.8, drop: 0.34, halfSpan: 0.38 },
+  { z: 9.5, drop: 0.34, halfSpan: 0.38 }
 ];
 
 export const STREAM = {
-  widthStart: 1.7,
-  widthEnd: 2.5,
+  widthStart: 1.42,
+  widthEnd: 1.98,
   depth: 0.16,
   clearMargin: 0.3
 };
 
-/** 溪床下切深度（LEVEL.streamBedOffset 的绝对值） */
 const BED_DEPTH = Math.abs(LEVEL.streamBedOffset);
-/** 水面与护岸顶的高差 = 护岸净空 */
 const WATER_EDGE_DEPTH = Math.abs(LEVEL.waterOffset);
-/** 溪床平底占半宽的比例 */
 const BED_FLAT_RATIO = 0.62;
-/** 水面出露处 → 护岸顶 的抬升横向跨度 */
-const BANK_RISE = 0.9;
+const BANK_RISE = 0.65;
 
-/** 沿溪流的归一化位置 t∈[0,1] 处的中心线点 */
 export function streamPoint(t) {
   const n = STREAM_PATH.length - 1;
   const u = clamp(t, 0, 1) * n;
   const i = Math.min(n - 1, Math.floor(u));
   const f = u - i;
+  const s = f * f * (3 - 2 * f);
   const a = STREAM_PATH[i];
   const b = STREAM_PATH[i + 1];
-  return { x: lerp(a.x, b.x, f), z: lerp(a.z, b.z, f) };
+  const z = lerp(a.z, b.z, f);
+  const wiggle = Math.sin(z * 0.85 + 0.7) * 0.14;
+  return { x: lerp(a.x, b.x, s) + wiggle, z };
 }
 
 export function streamWidthAt(t) {
-  return STREAM.widthStart + (STREAM.widthEnd - STREAM.widthStart) * clamp(t, 0, 1);
+  const base = STREAM.widthStart + (STREAM.widthEnd - STREAM.widthStart) * clamp(t, 0, 1);
+  // 跌水潭处略宽、石堰口略窄，形成自然的「束水-跌落-深潭」宽窄节奏
+  const rhythm = Math.sin(t * Math.PI * 12) * 0.14;
+  return base + rhythm;
 }
 
-/** 点到折线的最短距离 */
 export function distanceToPolyline(x, z, polyline) {
   let best = Infinity;
   for (let i = 0; i < polyline.length - 1; i += 1) {
@@ -156,25 +208,29 @@ export function distanceToPolyline(x, z, polyline) {
   return best;
 }
 
-export function streamDistance(x, z) {
-  return distanceToPolyline(x, z, STREAM_PATH);
-}
-
-/** 给定 z 处的溪流中心线 x（折线单调上升，直接按 z 反查） */
 export function streamCenterX(z) {
   const pts = STREAM_PATH;
+  const wiggle = Math.sin(z * 0.85 + 0.7) * 0.14;
   for (let i = 0; i < pts.length - 1; i += 1) {
     const a = pts[i];
     const b = pts[i + 1];
     if (z >= a.z && z <= b.z) {
       const t = (z - a.z) / (b.z - a.z);
-      return lerp(a.x, b.x, t);
+      const s = t * t * (3 - 2 * t);
+      return lerp(a.x, b.x, s) + wiggle;
     }
   }
-  return z < pts[0].z ? pts[0].x : pts[pts.length - 1].x;
+  return (z < pts[0].z ? pts[0].x : pts[pts.length - 1].x) + wiggle;
 }
 
-/** 给定 z 处的归一化溪流位置 t（z 单调 ⇒ 直接分段反查） */
+export function streamDistance(x, z) {
+  const cx = streamCenterX(z);
+  const cxNext = streamCenterX(z + 0.2);
+  const slopeX = (cxNext - cx) / 0.2;
+  const cos = 1 / Math.hypot(1, slopeX);
+  return Math.abs(x - cx) * cos;
+}
+
 export function streamTAt(z) {
   const pts = STREAM_PATH;
   const n = pts.length - 1;
@@ -187,25 +243,36 @@ export function streamTAt(z) {
   return 1;
 }
 
-/**
- * 护岸半宽。
- * 文档写成 `0.85 + (z + 14.5) × 0.014286` 的线性式；这里直接取
- * `streamWidthAt(t)/2`，两者在 [−14.5, 13.5] 内相差 < 0.006 m，
- * 但在 path 端点之外自动被 clamp 住，不会出现负宽或继续外扩。
- */
 export function streamBankHalf(z) {
   return streamWidthAt(streamTAt(z)) / 2;
 }
 
-/* ------------------------------------------------------------ 溪谷标高 */
+/* ------------------------------------------------------------ 叠瀑溪谷标高 */
 
 /**
- * 溪谷谷底。
- * z > 11.6 之后必须封顶：否则 valleyLevel(13.5) = −0.051，水面落到底座顶面以下，
- * 溪口会整段沉进展台里。封顶后溪口成为一片与第 1 级踏面几乎齐平的浅滩。
+ * 含 6 级小瀑布台阶落差的溪谷基准标高：
+ * 潭面平缓流动，经过 STREAM_CASCADES 各级石堰时陡降 0.26–0.34 m，形成层叠小瀑布。
  */
 export function valleyLevel(z) {
-  return Math.max(LEVEL.valleyFloor, LEVEL.valleyFloor + (PATH.zBottom - z) * 0.185);
+  const gentleSlope = Math.max(0, (PATH.zBottom + 2.2 - z) * 0.086);
+  let cascadeSum = 0;
+  for (const c of STREAM_CASCADES) {
+    cascadeSum += c.drop * (1 - smoothstep(c.z - c.halfSpan, c.z + c.halfSpan, z));
+  }
+  return Math.max(LEVEL.valleyFloor - 0.08, LEVEL.valleyFloor - 0.04 + gentleSlope + cascadeSum);
+}
+
+/** 某 z 处是否处于小瀑布陡降段（0 = 平缓潭水，1 = 瀑布跌水中心） */
+export function cascadeFactorAt(z) {
+  let best = 0;
+  for (const c of STREAM_CASCADES) {
+    const u = Math.abs(z - c.z) / c.halfSpan;
+    if (u < 1.3) {
+      const k = Math.max(0, 1 - u * u * 0.65);
+      if (k > best) best = k;
+    }
+  }
+  return best;
 }
 
 export function waterY(z) {
@@ -216,27 +283,12 @@ export function streamBedY(z) {
   return valleyLevel(z) + LEVEL.streamBedOffset;
 }
 
-/**
- * 左侧山脊标高：相对谷底由 1.58 m（前缘）抬到 2.10 m（后缘），
- * 跨距 11.6 → −14.5 共 26.1 m。
- */
 const RIDGE_RISE_RATE = (LEVEL.leftRidgeHigh - LEVEL.leftRidgeLow) / (PATH.zBottom - STREAM_PATH[0].z);
 
 export function ridgeLevel(z) {
   return valleyLevel(z) + LEVEL.leftRidgeLow + (PATH.zBottom - z) * RIDGE_RISE_RATE;
 }
 
-/**
- * 溪床下切遮罩（0…1，乘以 BED_DEPTH 得到实际下切量）。
- *
- * 断面形状是「平底 + 缓岸」的梯形，而不是从中心一路平滑下切：
- *   d ≤ 0.62·half          切满 0.16（溪床平底）
- *   0.62·half → half       0.16 → 0.05（在 d = half 处地面正好等于水面）
- *   half → half + 0.90     0.05 → 0（护岸顶 = 谷底 = 水面 + 0.05 净空）
- * 这样「地面 = 水面」恰好发生在 d = half ⇒ 出露水面宽度正好等于 STREAM.width，
- * 与文档的 1.70 → 2.50 m 一致；若整段用一条 smoothstep 下切，水面会漫到
- * d ≈ 1.70（前缘宽 3.4 m），比声称的宽度宽出 0.9 m。
- */
 export function streamMask(x, z) {
   const d = streamDistance(x, z);
   const half = streamBankHalf(z);
@@ -249,50 +301,48 @@ export function streamMask(x, z) {
   return edgeRatio * (1 - smoothstep(half, outer, d));
 }
 
-/** 护岸遮罩：用于把蕨类 / 石块等「贴着岸」的资产限制在岸坡范围内 */
 export function streamBankMask(x, z) {
   const d = streamDistance(x, z);
   const half = streamBankHalf(z);
   if (d <= half) return 1;
-  if (d >= half + 1.3) return 0;
-  return 1 - smoothstep(0, 1.3, d - half);
+  if (d >= half + 1.0) return 0;
+  return 1 - smoothstep(0, 1.0, d - half);
 }
 
-/* ------------------------------------------------------------ 地形主带 */
+/* ------------------------------------------------------------ 地形主带（随弯曲参道与蜿蜒溪流动态贴合） */
 
-/** 主带严格划分、只共边不重叠；带边界随 C(z) 摆动 ⇒ 必须按 z 求 */
-const VALLEY_LEFT = 2.4;
-const VALLEY_RIGHT = 2.2;
-const LEFT_SLOPE_SPAN = 1.5;
-const RIGHT_SHOULDER_X1 = 3.6;
-/** 左脊带的横向外沿：有限哨兵值（不能用 ±Infinity，Math.max(hypot) 会得到 NaN） */
+const VALLEY_LEFT = 1.5;
+const VALLEY_RIGHT = 1.05;
+const LEFT_SLOPE_SPAN = 1.4;
+const SHOULDER_WIDTH = 1.35;
 export const LEFT_RIDGE_OUTER = -(CONTENT_HALF + 8);
-
-/** 相邻带之间的羽化宽度 */
 export const FEATHER = 0.85;
 
 export const BAND_ORDER = ['leftRidge', 'leftSlope', 'valley', 'leftFoot', 'path', 'shoulder', 'rightHill'];
 
 export const BANDS = {
   leftRidge: { label: '左脊林', note: '溪谷外侧山体：樟 / 枫主干林、厚落叶层、青苔巨石' },
-  leftSlope: { label: '左陡坡', note: '山脊 → 溪谷的过渡陡坡，裸露根系；把 1.58→2.10 的抬升摊在 1.5 m 上而不是在谷边切出一面 61° 的墙' },
-  valley: { label: '溪谷带', note: '浅溪、溪底沙石、湿滑石块、蕨类；带内再切溪床' },
-  leftFoot: { label: '参道左坡脚', note: '溪谷 → 石阶的过渡陡坡（前缘近水平，后缘 ≈28°）' },
-  path: { label: '参道走廊', note: '32 级独立石阶 + 侧边泥土地 + 积水洼' },
+  leftSlope: { label: '左陡坡', note: '山脊 → 溪谷的过渡陡坡，裸露根系' },
+  valley: { label: '溪谷带', note: '蜿蜒叠瀑浅溪、溪底泥沙卵石、湿滑石堰、蕨类' },
+  leftFoot: { label: '参道左坡脚', note: '溪谷 → 弧形石阶的过渡坡' },
+  path: { label: '参道走廊', note: '32 级弧形独立石阶 + 弯曲上段石板路 + 侧边泥土地' },
   shoulder: { label: '右路肩', note: '碎石、落叶、湿石块' },
-  rightHill: { label: '右坡林地', note: '山坡林地、裸露根系、灌丛、樟 / 榊' }
+  rightHill: { label: '右坡林地', note: '右侧山坡地形（参道绕此山坡弯曲并向山后隐没）' }
 };
 
 function bandRanges(z) {
   const c = streamCenterX(z);
+  const { x0: px0, x1: px1 } = pathBoundsAt(z);
   const valley = valleyLevel(z);
   const ridge = ridgeLevel(z);
   const ramp = pathRampY(z);
   const slopeX0 = c - VALLEY_LEFT - LEFT_SLOPE_SPAN;
   const valleyX0 = c - VALLEY_LEFT;
-  const valleyX1 = c + VALLEY_RIGHT;
-  const footSpan = Math.max(0.3, PATH.x0 - valleyX1);
-  const hillSpan = Math.max(0.3, CONTENT_HALF - RIGHT_SHOULDER_X1);
+  const valleyX1 = Math.min(px0 - 0.25, c + VALLEY_RIGHT);
+  const footSpan = Math.max(0.25, px0 - valleyX1);
+  const rightShoulderX1 = Math.min(CONTENT_HALF - 0.6, px1 + SHOULDER_WIDTH);
+  const shoulderSpan = Math.max(0.25, rightShoulderX1 - px1);
+  const hillSpan = Math.max(0.3, CONTENT_HALF - rightShoulderX1);
   return [
     { name: 'leftRidge', x0: LEFT_RIDGE_OUTER, x1: slopeX0, levelAt: () => ridge },
     {
@@ -305,26 +355,25 @@ function bandRanges(z) {
     {
       name: 'leftFoot',
       x0: valleyX1,
-      x1: PATH.x0,
+      x1: px0,
       levelAt: (x) => lerp(valley, ramp, smoothstep(0, 1, (x - valleyX1) / footSpan))
     },
-    { name: 'path', x0: PATH.x0, x1: PATH.x1, levelAt: () => ramp },
+    { name: 'path', x0: px0, x1: px1, levelAt: () => ramp },
     {
       name: 'shoulder',
-      x0: PATH.x1,
-      x1: RIGHT_SHOULDER_X1,
-      levelAt: (x) => ramp + LEVEL.pathShoulder * smoothstep(0, 1, (x - PATH.x1) / (RIGHT_SHOULDER_X1 - PATH.x1))
+      x0: px1,
+      x1: rightShoulderX1,
+      levelAt: (x) => ramp + LEVEL.pathShoulder * smoothstep(0, 1, (x - px1) / shoulderSpan)
     },
     {
       name: 'rightHill',
-      x0: RIGHT_SHOULDER_X1,
+      x0: rightShoulderX1,
       x1: CONTENT_HALF,
-      levelAt: (x) => ramp + lerp(LEVEL.pathShoulder, LEVEL.rightHillTop, smoothstep(0, 1, (x - RIGHT_SHOULDER_X1) / hillSpan))
+      levelAt: (x) => ramp + lerp(LEVEL.pathShoulder, LEVEL.rightHillTop, smoothstep(0, 1, (x - rightShoulderX1) / hillSpan))
     }
   ];
 }
 
-/** 某 z 断面上的带边界（绝对 x），terrain.js 用它构造随 z 变化的 breakpoint 网格 */
 export function bandEdges(z) {
   return bandRanges(z).map((r) => ({ name: r.name, x0: r.x0, x1: r.x1 }));
 }
@@ -343,16 +392,7 @@ export function bandOf(x, z) {
   return x < ranges[0].x0 ? 'leftRidge' : 'rightHill';
 }
 
-/**
- * 多个主带按权重平均取 level，而不是「谁近听谁的」：max-weight 在两个矩形共用
- * 边界两侧各选一个 level，地面出现硬接缝 —— 实测 forecourt(0.30) / valleyFloor(0.22)
- * 在 z = 8.0 处跳 8 cm、stationBand / forecourt 在 z = 3.0 处跳 4 cm，溪流与碎石小径
- * 正从这两条线上穿过（水面 / 路面出现台阶）。本工程同理：七条带只用 x 方向羽化
- * （每条带都贯穿整个 z，dz 恒为 0），且带边界处两侧 level 本来就相等 ⇒ 接缝为零。
- */
 export function siteGrade(x, z) {
-  // 先 clamp 再取样：底座之外的采样点停在边缘标高，不会掉到 pad，
-  // 相机贴地守卫才不会在 CONTENT_HALF 附近读到悬崖。
   const xc = clamp(x, LEFT_RIDGE_OUTER, CONTENT_HALF);
   const ranges = bandRanges(z);
   let sumW = 0;
@@ -370,12 +410,6 @@ export function siteGrade(x, z) {
   return { level: sumL / sumW, weight, band: bandOf(x, z) };
 }
 
-/**
- * 微起伏。
- * 参道走廊与溪谷带内被压平（石阶与水面自己会造形），护岸坡脚保留起伏但
- * 额外给一点向上偏置：护岸净空只有 0.05 m，纯负向的 fbm 会把它抹平、
- * 让水漫上路面。
- */
 export function microRelief(x, z) {
   const base = (fbm3(x * 0.28, 7.31, z * 0.28, 4) - 0.4688) * 0.24;
   const bank = streamBankMask(x, z);
@@ -395,43 +429,32 @@ export function terrainHeight(x, z) {
 
 export const groundHeight = terrainHeight;
 
-/* ------------------------------------------------------------ 鸟居（同规格 2 座） */
+/* ------------------------------------------------------------ 鸟居（同规格 2 座 · 随弯曲参道一前一后紧挨） */
 
-/**
- * 局部坐标原点在两柱基中心、y = 柱基面（台石顶）。
- * 两座由同一个工厂产出 ⇒ 规格完全相同；各自独立根 Group / 独立 Mesh / 独立材质实例。
- * 額束只留框与黑底板：参考图上的奉纳文字按「全程无文字」规格省略。
- */
 export const TORII = {
-  gap: 2.5,
+  gap: 1.3,
   postSpan: 3.6,
   totalHeight: 4.38,
   pair: [
-    { id: 'front', name: 'toriiFront', x: 0.3, z: -0.9, step: 25 },
-    { id: 'rear', name: 'toriiRear', x: 0.3, z: -3.4, step: 30 }
+    { id: 'front', name: 'toriiFront', x: pathCenterX(-0.9), z: -0.9, step: 25, yaw: pathYaw(-0.9) * 0.45 },
+    { id: 'rear', name: 'toriiRear', x: pathCenterX(-2.2) - 0.34, z: -2.2, step: 28, yaw: pathYaw(-2.2) * 0.45 }
   ],
   parts: {
-    post: { label: '柱', count: 2, height: 4.0, rBottom: 0.22, rTop: 0.16, leanDeg: 1.5, x: 1.8, y0: 0.0, y1: 4.0, color: 'toriiVermilion' },
-    isizue: { label: '台石', count: 2, width: 0.62, height: 0.3, depth: 0.62, x: 1.8, y0: -0.3, y1: 0.0, color: 'stoneWet' },
-    shimaki: { label: '島木', count: 1, length: 4.8, height: 0.26, depth: 0.3, y0: 3.74, y1: 4.0, color: 'toriiVermilion' },
-    nimaki: { label: '眉木', count: 1, length: 5.0, height: 0.16, depth: 0.26, y0: 4.0, y1: 4.16, color: 'toriiBlack' },
-    kasagi: { label: '笠木', count: 1, length: 5.2, height: 0.22, depth: 0.3, camber: 0.16, y0: 4.16, y1: 4.38, color: 'toriiBlack' },
-    nuki: { label: '貫', count: 1, length: 4.4, height: 0.18, depth: 0.2, protrude: 0.4, y0: 2.55, y1: 2.73, color: 'toriiBlackFade' },
-    tsuka: { label: '束', count: 3, width: 0.12, height: 1.01, depth: 0.14, xOffsets: [0, 1.2, -1.2], y0: 2.73, y1: 3.74, color: 'toriiVermilion' },
-    gakuzuka: { label: '額束', count: 1, width: 0.55, height: 0.62, depth: 0.08, y0: 3.12, y1: 3.74, color: 'toriiVermilion', text: false }
+    post: { label: '柱', count: 2, height: 4.0, rBottom: 0.21, rTop: 0.16, leanDeg: 1.5, x: 1.8, y0: 0.0, y1: 4.0, color: 'toriiVermilion' },
+    isizue: { label: '台石', count: 2, width: 0.56, height: 0.26, depth: 0.56, x: 1.8, y0: -0.26, y1: 0.0, color: 'stoneWet' },
+    shimaki: { label: '島木', count: 1, length: 4.8, height: 0.25, depth: 0.28, y0: 3.75, y1: 4.0, color: 'toriiVermilion' },
+    nimaki: { label: '眉木', count: 1, length: 5.0, height: 0.14, depth: 0.25, y0: 4.0, y1: 4.14, color: 'toriiBlack' },
+    kasagi: { label: '笠木', count: 1, length: 5.2, height: 0.24, depth: 0.3, camber: 0.18, y0: 4.14, y1: 4.38, color: 'toriiBlack' },
+    nuki: { label: '貫', count: 1, length: 4.45, height: 0.2, depth: 0.2, protrude: 0.42, y0: 2.62, y1: 2.82, color: 'toriiVermilion' },
+    tsuka: { label: '束', count: 1, width: 0.14, height: 0.93, depth: 0.14, xOffsets: [0], y0: 2.82, y1: 3.75, color: 'toriiVermilion' },
+    gakuzuka: { label: '額束', count: 1, width: 0.26, height: 0.93, depth: 0.16, y0: 2.82, y1: 3.75, color: 'toriiVermilion', text: false }
   }
 };
 
-/** 柱基标高严格取参道坡面：前座 3.785、后座 4.510（文档写 4.515 是 5 mm 舍入误差） */
 export function toriiBaseY(z) {
   return pathRampY(z);
 }
 
-/**
- * 每座鸟居自己的净空盒（R4）。
- * 文档给的是两座并集；并集会把两座之间 1.1 m 的空档也算成禁区，
- * 实际那里是可以放湿石块 / 灌木的（参考图正是如此），所以按单座判定。
- */
 export function toriiClearanceBoxes() {
   return TORII.pair.map((t) => {
     const base = toriiBaseY(t.z);
@@ -439,163 +462,154 @@ export function toriiClearanceBoxes() {
       name: t.name,
       x0: t.x - TORII.postSpan / 2,
       x1: t.x + TORII.postSpan / 2,
-      z0: t.z - 0.7,
-      z1: t.z + 0.7,
+      z0: t.z - 0.5,
+      z1: t.z + 0.5,
       y0: base - 0.32,
       y1: base + TORII.totalHeight
     };
   });
 }
 
-/* ------------------------------------------------------------ 乔木 */
+/* ------------------------------------------------------------ 乔木（围合参道深林画框與远山密林） */
 
-/** species: kusunoki 樟 / sakaki 榊 / kaede 枫；高度 樟 8–13、枫 6–10、榊 4–7 m */
 export const TREES = [
-  { id: 1, x: -12.5, z: 6.0, species: 'kusunoki', scale: 1.15 },
-  { id: 2, x: -12.2, z: -1.5, species: 'kusunoki', scale: 1.25 },
-  { id: 3, x: -11.0, z: 10.5, species: 'kaede', scale: 1.0 },
-  { id: 4, x: -10.2, z: -5.5, species: 'kaede', scale: 0.95 },
-  { id: 5, x: -9.6, z: 8.5, species: 'sakaki', scale: 0.9 },
-  { id: 6, x: -11.8, z: -9.0, species: 'sakaki', scale: 1.0 },
-  { id: 7, x: -10.4, z: -12.0, species: 'kusunoki', scale: 1.1 },
-  { id: 8, x: -13.0, z: 3.0, species: 'kaede', scale: 1.1 },
-  { id: 9, x: -7.8, z: 12.5, species: 'sakaki', scale: 0.85 },
-  { id: 10, x: 7.5, z: 4.5, species: 'kusunoki', scale: 1.2 },
-  { id: 11, x: 12.0, z: -2.0, species: 'kusunoki', scale: 1.3 },
-  { id: 12, x: 5.2, z: 9.0, species: 'kaede', scale: 1.05 },
-  { id: 13, x: 9.8, z: 11.0, species: 'kaede', scale: 1.15 },
-  { id: 14, x: 4.2, z: 12.0, species: 'sakaki', scale: 0.9 },
-  { id: 15, x: 6.4, z: -7.5, species: 'sakaki', scale: 1.0 },
-  { id: 16, x: 12.6, z: 5.5, species: 'kusunoki', scale: 1.1 },
-  { id: 17, x: 13.2, z: -9.5, species: 'kaede', scale: 1.0 },
-  { id: 18, x: 3.6, z: 6.5, species: 'sakaki', scale: 0.8 },
-  { id: 19, x: 8.8, z: -12.5, species: 'sakaki', scale: 0.95 },
-  { id: 20, x: 12.7, z: 11.4, species: 'kusunoki', scale: 1.05 },
-  { id: 21, x: 13.0, z: -4.0, species: 'kaede', scale: 1.1 },
-  // 22–26：上段参道两侧的收口树，把 z < −7 的坡道残段挡在林里
-  // 22/23 的 z 由 −13.5 / −13.8 向内收到 −12.7 / −12.5：樟的实测冠半宽 2.62·scale，
-  //   原落点的冠缘到 z −16.44 / −16.39，越过 CANOPY_SAFE(15.7) 甚至 R1 硬界 ±16.05，枝叶会悬到底座外。
-  { id: 22, x: -2.8, z: -12.7, species: 'kusunoki', scale: 1.25 },
-  { id: 23, x: 3.2, z: -12.5, species: 'kusunoki', scale: 1.2 },
-  { id: 24, x: -2.4, z: -11.0, species: 'kaede', scale: 1.0 },
-  { id: 25, x: 2.9, z: -9.2, species: 'sakaki', scale: 0.95 },
-  { id: 26, x: -2.4, z: -7.0, species: 'kaede', scale: 1.0 }
+  // 左侧密林带（移开镜头正前方的近景遮挡树，让左下方蜿蜒叠瀑溪流完整展现！）
+  { id: 1, x: -5.8, z: 7.8, species: 'kusunoki', scale: 1.28 },
+  { id: 2, x: -6.4, z: 2.2, species: 'kusunoki', scale: 1.32 },
+  { id: 3, x: -6.6, z: 10.8, species: 'kaede', scale: 1.22 },
+  { id: 4, x: -7.2, z: -2.2, species: 'sakaki', scale: 1.25 },
+  { id: 5, x: -6.2, z: 12.2, species: 'sakaki', scale: 1.15 },
+  { id: 6, x: -6.8, z: -6.2, species: 'sakaki', scale: 1.25 },
+  { id: 7, x: -7.8, z: -10.5, species: 'kusunoki', scale: 1.28 },
+  { id: 8, x: -7.6, z: 4.5, species: 'kusunoki', scale: 1.25 },
+  { id: 9, x: -5.6, z: 4.8, species: 'sakaki', scale: 1.15 },
+
+  // 右侧陡坡密林带（参道绕着这片山林形成小弧线，并在鸟居后方大弯绕至这片山林背后消失）
+  { id: 10, x: 3.3, z: 5.2, species: 'kusunoki', scale: 1.3 },
+  { id: 11, x: 3.9, z: -0.4, species: 'kusunoki', scale: 1.26 },
+  { id: 12, x: 3.5, z: 9.2, species: 'sakaki', scale: 1.2 },
+  { id: 13, x: 5.4, z: 10.8, species: 'kaede', scale: 1.2 },
+  { id: 14, x: 3.6, z: 11.8, species: 'sakaki', scale: 1.12 },
+  { id: 15, x: 4.4, z: -4.2, species: 'sakaki', scale: 1.22 },
+  { id: 16, x: 6.4, z: 6.2, species: 'kusunoki', scale: 1.25 },
+  { id: 17, x: 7.4, z: -7.5, species: 'kaede', scale: 1.2 },
+  { id: 18, x: 2.9, z: 7.4, species: 'sakaki', scale: 1.08 },
+  { id: 19, x: 6.6, z: -11.2, species: 'sakaki', scale: 1.15 },
+  { id: 20, x: 6.8, z: 1.8, species: 'kusunoki', scale: 1.25 },
+  { id: 21, x: 5.8, z: -2.4, species: 'kaede', scale: 1.2 },
+
+  // 鸟居正后方与上段弯曲山路内侧的高耸主干与透光林冠
+  { id: 22, x: -0.55, z: -7.6, species: 'kusunoki', scale: 1.22 },
+  { id: 23, x: 0.45, z: -8.6, species: 'kusunoki', scale: 1.2 },
+  { id: 24, x: -2.4, z: -5.6, species: 'kaede', scale: 1.22 },
+  { id: 25, x: 3.6, z: -5.2, species: 'kaede', scale: 1.2 },
+  { id: 26, x: -1.65, z: -6.6, species: 'kusunoki', scale: 1.18 }
 ];
 
 /* ------------------------------------------------------------ 灌丛 */
 
-/** r = 冠幅半径；右侧中心 ≥ 2.90（盒 min.x > 1.65）、左侧中心 ≤ −2.35（盒 max.x < −1.05）⇒ 都不进参道走廊 */
 export const SHRUBS = [
-  // 参道左坡脚
-  { x: -2.6, z: 9.5, r: 0.9 },
-  { x: -3.6, z: 7.2, r: 0.95 },
-  { x: -2.4, z: 5.0, r: 0.85 },
-  { x: -4.2, z: 2.2, r: 0.95 },
-  { x: -3.1, z: -1.2, r: 0.9 },
-  { x: -4.6, z: -4.2, r: 0.95 },
-  { x: -3.4, z: -7.6, r: 0.85 },
-  { x: -5.0, z: -10.4, r: 0.9 },
-  // 右坡地前缘
-  { x: 3.1, z: 10.6, r: 0.85 },
-  { x: 3.6, z: 8.2, r: 0.95 },
-  { x: 2.95, z: 6.1, r: 0.8 },
-  { x: 4.3, z: 3.4, r: 0.9 },
-  { x: 3.1, z: 1.0, r: 0.85 },
-  { x: 4.6, z: -1.6, r: 0.95 },
-  { x: 3.2, z: -4.6, r: 0.85 },
-  { x: 4.1, z: -6.4, r: 0.9 },
-  // 溪岸（让位溪流：|x − C(z)| 均 > 0.3 + r 的等效净空）
-  { x: -7.3, z: 9.2, r: 0.75 },
-  { x: -4.05, z: 5.6, r: 0.7 },
-  { x: -9.05, z: -6.2, r: 0.8 },
-  { x: -5.3, z: -9.6, r: 0.7 },
-  // 上段参道两侧（把坡道残段夹起来）
-  { x: -2.35, z: -6.6, r: 0.85 },
-  { x: 2.95, z: -7.4, r: 0.85 }
+  // 参道左坡脚与溪谷外岸（让开左前景溪流主视线，使 6 级叠瀑与清澈深潭一览无余）
+  { x: -5.2, z: 9.8, r: 0.9 },
+  { x: -5.5, z: 7.4, r: 0.92 },
+  { x: -5.2, z: 5.2, r: 0.92 },
+  { x: -2.3, z: 2.8, r: 0.88 },
+  { x: -2.4, z: -0.4, r: 0.88 },
+  { x: -3.2, z: -3.6, r: 0.95 },
+  { x: -3.2, z: -6.8, r: 0.92 },
+  { x: -4.2, z: -9.8, r: 0.92 },
+  // 右坡地前缘（贴合弧形石阶右侧山坡）
+  { x: 3.3, z: 10.6, r: 0.92 },
+  { x: 3.1, z: 8.2, r: 0.95 },
+  { x: 2.7, z: 6.0, r: 0.9 },
+  { x: 2.6, z: 3.6, r: 0.95 },
+  { x: 2.6, z: 1.2, r: 0.9 },
+  { x: 3.1, z: -1.6, r: 0.95 },
+  { x: 3.8, z: -4.2, r: 0.92 },
+  { x: 5.2, z: -6.4, r: 0.92 },
+  // 溪流左外岸
+  { x: -5.4, z: 11.8, r: 0.9 },
+  { x: -5.9, z: 3.2, r: 0.92 },
+  { x: -6.1, z: -0.8, r: 0.95 },
+  { x: -6.8, z: -4.6, r: 0.95 },
+  // 上段弯曲参道内侧与外侧收口
+  { x: -1.8, z: -4.8, r: 0.92 },
+  { x: 0.4, z: -7.2, r: 0.9 }
 ];
 
 /* ------------------------------------------------------------ 蕨类 */
 
 export const FERNS = [
-  // 溪谷两岸交替
-  { x: -7.05, z: 11.2 },
-  { x: -4.1, z: 10.4 },
-  { x: -7.35, z: 8.0 },
-  { x: -4.35, z: 6.8 },
-  { x: -7.7, z: 5.2 },
-  { x: -4.55, z: 3.6 },
-  { x: -8.05, z: 2.0 },
-  { x: -4.85, z: 0.4 },
-  { x: -8.45, z: -1.4 },
-  { x: -5.15, z: -3.0 },
-  { x: -8.8, z: -4.6 },
-  { x: -5.6, z: -6.4 },
-  { x: -9.3, z: -8.2 },
-  { x: -6.1, z: -10.0 },
-  // 参道左坡脚阴面
-  { x: -2.85, z: 8.8 },
-  { x: -3.9, z: 4.4 },
-  { x: -2.6, z: 2.6 },
-  { x: -4.4, z: -0.6 },
-  { x: -3.3, z: -3.2 },
-  { x: -4.9, z: -6.0 },
-  { x: -3.7, z: -9.0 },
-  { x: -5.4, z: -12.2 },
-  // 右坡地阴坡
-  { x: 4.6, z: 7.6 },
-  { x: 6.2, z: 2.4 },
-  { x: 5.1, z: -3.2 },
-  { x: 7.4, z: -8.6 }
+  // 蜿蜒溪谷两岸交替（紧贴各级叠瀑与深潭岸边，严格在水线之外）
+  { x: -3.8, z: 11.4 },
+  { x: -1.15, z: 10.4 },
+  { x: -4.6, z: 8.4 },
+  { x: -1.55, z: 7.2 },
+  { x: -4.5, z: 5.4 },
+  { x: -1.85, z: 4.0 },
+  { x: -5.8, z: 2.2 },
+  { x: -2.4, z: 0.8 },
+  { x: -5.6, z: -1.4 },
+  { x: -3.4, z: -2.8 },
+  { x: -6.4, z: -4.6 },
+  { x: -3.5, z: -6.2 },
+  { x: -7.2, z: -8.2 },
+  { x: -4.2, z: -10.0 },
+  // 左前景与左坡脚阴面
+  { x: -3.65, z: 9.8 },
+  { x: -4.85, z: 6.8 },
+  { x: -2.1, z: 2.4 },
+  { x: -2.5, z: -0.6 },
+  { x: -3.2, z: -3.6 },
+  { x: -3.4, z: -6.0 },
+  { x: -4.4, z: -9.0 },
+  { x: -4.2, z: -12.0 },
+  // 右坡地阴坡（沿弧形参道右侧）
+  { x: 2.95, z: 9.4 },
+  { x: 2.45, z: 5.4 },
+  { x: 2.35, z: 1.8 },
+  { x: 3.3, z: -3.2 }
 ];
 
-/* ------------------------------------------------------------ 溪内石块 */
+/* ------------------------------------------------------------ 溪内石块（配合蜿蜒溪道与瀑布潭口） */
 
-/** 全部落在河道内（|x − C(z)| < half）；资产名 streamStones 走 WATER_SYSTEM 免检 */
 export const STREAM_STONES = [
-  { x: -4.95, z: 11.0, r: 0.3 },
-  { x: -5.9, z: 8.6, r: 0.26 },
-  { x: -5.1, z: 6.2, r: 0.22 },
-  { x: -6.25, z: 3.8, r: 0.28 },
-  { x: -5.55, z: 1.4, r: 0.24 },
-  { x: -6.85, z: -1.6, r: 0.3 },
-  { x: -6.45, z: -5.2, r: 0.26 },
-  { x: -8.05, z: -9.4, r: 0.32 }
+  { x: streamCenterX(12.2) + 0.12, z: 12.2, r: 0.28 },
+  { x: streamCenterX(10.2) - 0.14, z: 10.2, r: 0.26 },
+  { x: streamCenterX(8.0) + 0.15, z: 8.0, r: 0.25 },
+  { x: streamCenterX(5.2) - 0.12, z: 5.2, r: 0.28 },
+  { x: streamCenterX(2.8) + 0.14, z: 2.8, r: 0.25 },
+  { x: streamCenterX(-0.8) - 0.12, z: -0.8, r: 0.28 },
+  { x: streamCenterX(-4.6) + 0.14, z: -4.6, r: 0.26 },
+  { x: streamCenterX(-8.8) - 0.15, z: -8.8, r: 0.3 }
 ];
 
 /* ------------------------------------------------------------ 湿石块 */
 
 export const WET_ROCKS = [
-  // 溪岸
-  { x: -6.85, z: 9.6, r: 0.3 },
-  // 从 (-4.6, 7.8) 外移：原点到中心线 0.91 m，而该处岸线半宽 1.17 m，石块整颗在水里
-  { x: -4.15, z: 7.4, r: 0.26 },
-  { x: -8.2, z: 3.2, r: 0.32 },
-  // 从 (-5.05, -0.2) 外移：原点到中心线 1.01 m < 岸线半宽 1.05 m
-  { x: -4.75, z: -0.2, r: 0.28 },
-  { x: -8.9, z: -5.6, r: 0.34 },
-  { x: -5.9, z: -8.8, r: 0.26 },
-  // 参道两侧泥地
-  { x: -1.45, z: 9.8, r: 0.24 },
-  { x: 1.95, z: 8.4, r: 0.22 },
-  { x: -1.4, z: 5.6, r: 0.26 },
-  { x: 2.0, z: 3.0, r: 0.24 },
-  { x: -1.42, z: 1.4, r: 0.22 },
-  // 从 1.98 外移到 2.45：1.98 会插进前座鸟居净空盒（x ≤ 2.10）
-  { x: 2.45, z: -1.0, r: 0.26 },
+  // 溪岸与左下方乱石滩（严格位于水面岸线之外）
+  { x: -4.15, z: 11.8, r: 0.3 },
+  { x: -0.95, z: 11.2, r: 0.24 },
+  { x: -4.45, z: 9.0, r: 0.28 },
+  { x: -1.45, z: 8.2, r: 0.24 },
+  { x: -4.65, z: 6.2, r: 0.3 },
+  { x: -2.05, z: 4.8, r: 0.25 },
+  // 弯曲参道两侧泥地
+  { x: pathBoundsAt(9.6).x0 - 0.18, z: 9.6, r: 0.22 },
+  { x: pathBoundsAt(8.4).x1 + 0.26, z: 8.4, r: 0.22 },
+  { x: pathBoundsAt(6.2).x0 - 0.25, z: 6.2, r: 0.24 },
+  { x: pathBoundsAt(3.2).x1 + 0.28, z: 3.2, r: 0.24 },
+  { x: pathBoundsAt(1.6).x0 - 0.28, z: 1.6, r: 0.22 },
+  { x: pathBoundsAt(-1.0).x1 + 0.95, z: -1.0, r: 0.26 },
   // 坡地
-  { x: 3.3, z: 11.2, r: 0.3 },
-  { x: 5.6, z: 6.0, r: 0.34 },
-  { x: 4.2, z: -2.6, r: 0.28 },
-  { x: 6.8, z: -10.8, r: 0.36 }
+  { x: 3.15, z: 11.2, r: 0.28 },
+  { x: 3.2, z: 6.0, r: 0.32 },
+  { x: 3.6, z: -2.6, r: 0.28 },
+  { x: 6.8, z: -8.8, r: 0.34 }
 ];
 
-/* ------------------------------------------------------------ 积水洼 */
+/* ------------------------------------------------------------ 积水洼（自动随弯曲石阶偏移） */
 
-/**
- * 石阶上的积水沿 X 拉长（r 0.28–0.40）、沿 Z 收窄（rz 0.18–0.22）。
- * 文档的 0.22–0.40 各向同性半径会越过 0.50 m 的踏步深，R6 宿主包含判据（容差 0.06）过不去；
- * 真实台阶上的积水本来就是顺着踏面横向摊开的一条椭圆。
- */
 export const PUDDLES = [
   { host: 'step', step: 1, x: 0.05, r: 0.34, rz: 0.2 },
   { host: 'step', step: 3, x: 1.05, r: 0.3, rz: 0.19 },
@@ -609,19 +623,24 @@ export const PUDDLES = [
   { host: 'step', step: 19, x: 1.3, r: 0.28, rz: 0.18 },
   { host: 'step', step: 22, x: -0.25, r: 0.36, rz: 0.21 },
   { host: 'step', step: 26, x: 0.7, r: 0.32, rz: 0.2 },
-  // 路肩泥地
-  { host: 'ground', x: -1.55, z: 10.6, r: 0.3, rz: 0.24 },
-  { host: 'ground', x: 2.05, z: 9.2, r: 0.26, rz: 0.21 },
-  { host: 'ground', x: -1.5, z: 6.8, r: 0.28, rz: 0.22 },
-  { host: 'ground', x: 2.1, z: 4.2, r: 0.24, rz: 0.19 },
-  { host: 'ground', x: -1.52, z: 2.4, r: 0.3, rz: 0.24 },
-  { host: 'ground', x: 2.08, z: 0.2, r: 0.26, rz: 0.21 }
-].map((p) => ({ ...p, z: p.host === 'step' ? frontZ(p.step) - PATH.tread / 2 : p.z }));
+  // 路肩泥地（贴合弯曲参道外侧）
+  { host: 'ground', x: pathBoundsAt(10.6).x0 - 0.16, z: 10.6, r: 0.28, rz: 0.22 },
+  { host: 'ground', x: pathBoundsAt(9.2).x1 + 0.36, z: 9.2, r: 0.26, rz: 0.21 },
+  { host: 'ground', x: pathBoundsAt(6.8).x0 - 0.28, z: 6.8, r: 0.28, rz: 0.22 },
+  { host: 'ground', x: pathBoundsAt(4.2).x1 + 0.38, z: 4.2, r: 0.24, rz: 0.19 },
+  { host: 'ground', x: pathBoundsAt(2.4).x0 - 0.35, z: 2.4, r: 0.28, rz: 0.22 },
+  { host: 'ground', x: pathBoundsAt(0.2).x1 + 0.38, z: 0.2, r: 0.26, rz: 0.21 }
+].map((p) => {
+  if (p.host === 'step') {
+    const cz = frontZ(p.step) - PATH.tread / 2;
+    return { ...p, x: p.x + pathShiftX(cz), z: cz };
+  }
+  return p;
+});
 
-/* ------------------------------------------------------------ 青苔斑 */
+/* ------------------------------------------------------------ 青苔斑（自动随弯曲石阶偏移） */
 
 export const MOSS_PATCHES = [
-  // 立面青苔：贴在各级石板的 riser 面上（z = 该级前缘）
   { host: 'step', step: 2, x: -0.45, r: 0.24 },
   { host: 'step', step: 4, x: 1.1, r: 0.28 },
   { host: 'step', step: 6, x: 0.05, r: 0.22 },
@@ -634,29 +653,31 @@ export const MOSS_PATCHES = [
   { host: 'step', step: 21, x: 0.75, r: 0.3 },
   { host: 'step', step: 24, x: -0.35, r: 0.26 },
   { host: 'step', step: 27, x: 1.2, r: 0.22 },
-  // 石上青苔：长在湿石块 / 溪石顶面
+  // 石上青苔
   { host: 'rock', rock: { list: 'wetRock', index: 0 }, r: 0.42 },
-  { host: 'rock', rock: { list: 'wetRock', index: 1 }, r: 0.36 },
-  { host: 'rock', rock: { list: 'wetRock', index: 2 }, r: 0.46 },
-  { host: 'rock', rock: { list: 'wetRock', index: 3 }, r: 0.4 },
-  { host: 'rock', rock: { list: 'wetRock', index: 4 }, r: 0.5 },
+  { host: 'rock', rock: { list: 'wetRock', index: 1 }, r: 0.34 },
+  { host: 'rock', rock: { list: 'wetRock', index: 2 }, r: 0.42 },
+  { host: 'rock', rock: { list: 'wetRock', index: 3 }, r: 0.34 },
+  { host: 'rock', rock: { list: 'wetRock', index: 4 }, r: 0.44 },
   { host: 'rock', rock: { list: 'wetRock', index: 5 }, r: 0.36 },
-  { host: 'rock', rock: { list: 'streamStone', index: 0 }, r: 0.3 },
-  { host: 'rock', rock: { list: 'streamStone', index: 2 }, r: 0.26 },
-  { host: 'rock', rock: { list: 'streamStone', index: 4 }, r: 0.28 },
-  { host: 'rock', rock: { list: 'streamStone', index: 6 }, r: 0.3 },
+  { host: 'rock', rock: { list: 'streamStone', index: 0 }, r: 0.28 },
+  { host: 'rock', rock: { list: 'streamStone', index: 2 }, r: 0.24 },
+  { host: 'rock', rock: { list: 'streamStone', index: 4 }, r: 0.26 },
+  { host: 'rock', rock: { list: 'streamStone', index: 6 }, r: 0.28 },
   // 树基与坡地苔毯
-  { host: 'ground', x: -12.5, z: 6.0, r: 0.55 },
-  { host: 'ground', x: 7.5, z: 4.5, r: 0.6 },
-  { host: 'ground', x: 5.2, z: 9.0, r: 0.5 },
-  { host: 'ground', x: -2.8, z: -13.5, r: 0.6 },
-  { host: 'ground', x: 3.2, z: -13.8, r: 0.55 },
-  { host: 'ground', x: -6.8, z: -2.4, r: 0.45 },
-  { host: 'ground', x: 4.8, z: -5.4, r: 0.5 },
-  { host: 'ground', x: -9.6, z: 1.2, r: 0.4 }
+  { host: 'ground', x: -5.4, z: 7.8, r: 0.55 },
+  { host: 'ground', x: 3.3, z: 5.2, r: 0.6 },
+  { host: 'ground', x: 3.5, z: 9.2, r: 0.5 },
+  { host: 'ground', x: -0.55, z: -7.6, r: 0.55 },
+  { host: 'ground', x: 0.45, z: -8.6, r: 0.55 },
+  { host: 'ground', x: -4.2, z: -2.4, r: 0.45 },
+  { host: 'ground', x: 4.4, z: -4.2, r: 0.5 },
+  { host: 'ground', x: -6.2, z: 1.2, r: 0.4 }
 ].map((p) => {
   if (p.host === 'step') {
-    return { ...p, x: p.x, z: frontZ(p.step), y: stepTopY(p.step) - PATH.rise };
+    const fz = frontZ(p.step);
+    const cz = fz - PATH.tread * 0.5;
+    return { ...p, x: p.x + pathShiftX(cz), z: fz, y: stepTopY(p.step) - PATH.rise };
   }
   if (p.host === 'rock') {
     const src = p.rock.list === 'wetRock' ? WET_ROCKS : STREAM_STONES;
@@ -669,67 +690,56 @@ export const MOSS_PATCHES = [
 /* ------------------------------------------------------------ 细树干与藤蔓 */
 
 export const TWIGS = [
-  { x: -6.8, z: 10.2 },
-  { x: -8.6, z: 6.4 },
-  { x: -9.9, z: 1.2 },
-  // 从 (-7.2, -4.8) 外移：该点到中心线 0.33 m < 岸线半宽 0.99 m，枯干整根插在水里
-  { x: -8.4, z: -4.8 },
-  { x: -9.6, z: -10.6 },
-  { x: -3.2, z: 7.6 },
-  { x: -4.1, z: -2.4 },
-  { x: 2.6, z: 11.4 },
-  { x: 4.8, z: 8.8 },
-  { x: 6.6, z: 4.0 },
-  // 倒向 +X（横躺在路肩上）
-  { x: 3.9, z: -0.8, az: 0 },
-  { x: 5.8, z: -5.4 },
-  { x: 7.6, z: -9.8 },
-  { x: -2.9, z: -12.6 }
+  { x: -4.2, z: 10.6 },
+  { x: -4.8, z: 6.4 },
+  { x: -5.8, z: 1.2 },
+  { x: -6.6, z: -4.8 },
+  { x: -7.8, z: -10.6 },
+  { x: -4.9, z: 8.2 },
+  { x: -3.2, z: -2.4 },
+  { x: 3.1, z: 11.4 },
+  { x: 3.2, z: 8.8 },
+  { x: 3.6, z: 4.0 },
+  { x: 3.4, z: -0.8, az: 0 },
+  { x: 4.6, z: -5.4 },
+  { x: 6.4, z: -9.8 },
+  { x: -3.2, z: -11.6 }
 ];
 
-/* ------------------------------------------------------------ 视点与焦点 */
+/* ------------------------------------------------------------ 视点与焦点（默认在参道左旁溪谷侧观察，非死板正中间） */
 
 export const POINTS = {
-  cameraTarget: { x: 0.3, y: 3.6, z: -0.9 },
-  stepBottom: { x: 0.3, y: 0.16, z: 11.6 },
-  stepTop: { x: 0.3, y: 4.8, z: -4.4 },
-  streamMouth: { x: -5.2, y: 0.25, z: 13.5 },
-  forestEdge: { x: 0.3, y: 7.0, z: -13.5 },
+  cameraTarget: { x: -0.15, y: 4.25, z: -0.8 },
+  stepBottom: { x: pathCenterX(11.6), y: 0.16, z: 11.6 },
+  stepTop: { x: pathCenterX(-4.4), y: 4.8, z: -4.4 },
+  streamMouth: { x: streamCenterX(13.5), y: 0.25, z: 13.5 },
+  forestEdge: { x: 1.8, y: 7.0, z: -13.5 },
   padFront: { x: 0.3, y: 0, z: 15.9 }
 };
 
-/** 景深焦点固定在两座鸟居之间的空档，不跟随相机注视点 */
-export const DOF_FOCUS = { x: 0.3, y: 5.6, z: -2.15 };
+export const DOF_FOCUS = { x: 0.22, y: 5.2, z: -1.5 };
 
 /* ------------------------------------------------------------ 放置校验 */
 
-/** 非水体资产允许的最小溪岸退距：岸线内缩 5 cm（允许浅埋贴岸）与中心线退距取大者 */
 function waterEdgeLimit(z) {
   return Math.max(streamBankHalf(z) - 0.05, STREAM.clearMargin);
 }
 
 export const PATH_SYSTEM = new Set([
   'basePad', 'stoneSteps', 'upperPath', 'pathSoil', 'torii', 'toriiFront', 'toriiRear', 'puddle', 'wetRock',
-  // 地形本身横跨参道 / 溪谷 / 坡地（32×32 连续高度场），走廊与溪谷净空对它无意义；
-  // 它的边界由 R1 与自身的裙壁收边保证。
   'terrain',
-  // 地被 / 落叶层是贴地薄层，落在石阶上正是想要的效果，不参与走廊与鸟居净空判定
   'groundCover', 'leafLitter',
-  // 青苔斑块本来就长在石阶立面 / 石块 / 溪岸上，不参与走廊、溪谷与鸟居净空判定
   'mossPatch'
 ]);
 export const WATER_SYSTEM = new Set(['streamWater', 'streamBed', 'streamStones', 'mossPatch']);
 export const ATMOSPHERE_SYSTEM = new Set(['mist']);
 
-/** 非参道资产不得落进参道走廊 */
 function insideCorridor(x, z) {
-  return x >= PATH.x0 && x <= PATH.x1 && z >= PATH.corridorZ0 && z <= PATH.corridorZ1;
+  if (z < PATH.corridorZ0 || z > PATH.corridorZ1) return false;
+  const { x0, x1 } = pathBoundsAt(z);
+  return x >= x0 && x <= x1;
 }
 
-/**
- * R1 底座范围 / R2 参道走廊净空 / R3 溪谷净空 / R4 鸟居净空 /
- * R5 悬空或埋入 / R6 宿主包含。（R7 树冠重叠是工具级两两比对，不在这里。）
- */
 export function validatePlacement(box, name, support = null, samples = null) {
   const issues = [];
   const cx = (box.min.x + box.max.x) / 2;
@@ -741,8 +751,6 @@ export function validatePlacement(box, name, support = null, samples = null) {
   if (box.min.x < -PAD.half - 0.05 || box.max.x > PAD.half + 0.05) issues.push('R1 x 越出底座');
   if (box.min.z < -PAD.half - 0.05 || box.max.z > PAD.half + 0.05) issues.push('R1 z 越出底座');
 
-  // 走廊判据取样：多实例资产（树、灌丛、石块）的包围盒角点并不代表真实落点，
-  // 允许通过 userData.samples 显式给出各实例 footprint 中心，改用真实点取样。
   const probePoints = (Array.isArray(samples) && samples.length)
     ? samples.map((p) => ({ x: p.x, z: p.z }))
     : [box.min.x, cx, box.max.x].flatMap((x) => [box.min.z, cz, box.max.z].map((z) => ({ x, z })));
@@ -753,9 +761,6 @@ export function validatePlacement(box, name, support = null, samples = null) {
   }
 
   if (!isWater && !isAtmosphere) {
-    // 溪谷净空按「水面出露范围」判定，而不是拿溪床标高去比整条断面：
-    // streamMask 的梯形断面保证 d = streamBankHalf 处地面正好等于水面，岸坡上的地面
-    // 本来就高于溪床 5–16 cm，用溪床判定会把贴着岸的石块 / 蕨类 / 枯枝全部误杀。
     const wet = probePoints.find((p) => streamDistance(p.x, p.z) < waterEdgeLimit(p.z));
     if (wet) {
       issues.push(`R3 落进水面范围 (d=${streamDistance(wet.x, wet.z).toFixed(2)} < 岸线 ${waterEdgeLimit(wet.z).toFixed(2)})`);
@@ -770,8 +775,6 @@ export function validatePlacement(box, name, support = null, samples = null) {
     if (hit) issues.push(`R4 侵入鸟居净空 (${hit.x.toFixed(2)}, ${hit.z.toFixed(2)})`);
   }
 
-  // 支撑面基准：默认取自然地形；搭建在石阶 / 石块 / 坡面之上的构件通过 support.top
-  // 声明其承托面标高，嵌在宿主结构内的构件改用「必须落在宿主包围盒内」。
   const ground = terrainHeight(cx, cz);
   const host = (support && typeof support === 'object') ? support.host : null;
   const topArg = (support && typeof support === 'object') ? support.top : support;
@@ -779,7 +782,7 @@ export function validatePlacement(box, name, support = null, samples = null) {
 
   if (name !== 'basePad') {
     if (isAtmosphere || (support && typeof support === 'object' && support.overhead)) {
-      // 雾卡 / 架空构件不参与接地判据：其支撑构件由各自资产自行校验
+      // 雾卡 / 架空构件不参与接地判据
     } else if (host) {
       const tol = 0.06;
       const out = box.min.x < host.x[0] - tol || box.max.x > host.x[1] + tol ||

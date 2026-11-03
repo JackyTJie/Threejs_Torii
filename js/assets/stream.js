@@ -1,32 +1,18 @@
-// 山涧溪流：水面（streamWater）与溪床（streamBed）—— 两个独立资产根。
+// 山涧蜿蜒叠瀑溪流：水面（streamWater）与溪床（streamBed）—— 两个独立资产根。
 //
-// 为什么水面宽度要「求」出来，而不是直接取 STREAM.width / 2：
-//   layout.js 的溪床下切是梯形（streamMask），并且只在 d = half 处让「地面正好等于水面」。
-//   但 microRelief 的噪声会把这条等值线推来推去（±2 cm），直接按 half 铺水面会在某些
-//   站点漫上护岸、在另一些站点留出缝隙。所以逐站点沿 ±x 做「湿/干」二分求水线：
-//   从中心外推直到 terrainHeight >= waterY，再在最后一次湿润与第一次干燥之间二分 24 次。
-//   这样水面边缘永远贴在真实地面上，波纹的岸列权重又固定为 0（见下），边缘不会翘起。
-//
-// 上游端自动收口：折线终点在 z = -14.5，再往上游 streamTAt 被夹住、垂距增大 ⇒
-//   streamMask → 0 ⇒ 地面高于水面 ⇒ 站点被丢弃 ⇒ 水面自己 pinch 到 z ≈ -15.2 结束。
-// 下游端：valleyLevel 在 z > 11.6 封顶（见 layout.js），溪谷保持潮湿 ⇒ 水一直流到
-//   底座前缘 CONTENT_HALF，即文档里的「溪流自 +Z 前缘出画（x ≈ -5.2）」。
-//
-// 溪床衬砌为什么按「水深」抬升，而不是按横向列比羽化：
-//   水线处 terrainHeight == waterY，任何固定正抬升都会在那里顶穿水面。
-//   改用 lift = min(0.018, 0.5 · depth)，depth = waterY − terrainHeight：
-//     · 衬砌顶恒在水面之下（lift < depth）
-//     · 衬砌顶恒在地面之上 ≥ 6 mm（衬砌范围内 depth ≥ 0.012）⇒ 不与地形 z-fighting
-//   衬砌边界另按 depth ≥ DEPTH_MIN 二分，比水线再内缩一点，露出地形自己的护岸坡。
-//
-// 逐站点 × 7 列、站点为主序（station-major）是 stream-flow.js 的硬要求：
-//   它用 station = floor(index / columns) 求站点间距，用 ratios[i % columns] 取横向权重。
-//   列比 [1, .667, .333, 0, −.333, −.667, −1] ⇒ 权重 1−ratio² 在岸列为 0，
-//   水面边缘永远不动；只有内部列起伏。没有内部列的整片水面会一动不动。
+// 结合第三张溪流参考图与雨后深林静谧氛围进行全方位升级：
+// 1) 蜿蜒曲折 + 6 级叠瀑小滝（STREAM_CASCADES）：
+//    不再是笔直单调的镜面斜坡，而是沿左谷 S 型蜿蜒曲折，每隔一段平缓清澈深潭即跌落一级小瀑布；
+// 2) 清澈见底的丰富的水下河床（streamBed）：
+//    深褐湿泥沙底衬砌 + 6 级天然叠水石堰卵石坝（weirStone）+ 冲刷砾石滩 + 溪底鹅卵石 + 沉水红褐落叶；
+// 3) 多层次动态水体（streamWater）：
+//    主清澈水面（11 列高密度横断面）+ 6 级小瀑布丝状跌水水帘（cascadeCurtain）+ 瀑下深潭旋转漩涡泡沫环（eddyRing）+ 溪石激流尾迹（wakeFoam）。
 import * as THREE from 'three';
-import { group, mesh, rng, rockGeometry, triplanarUv } from '../primitives.js';
+import { group, leafSheetGeometry, mesh, place, rng, rockGeometry, triplanarUv } from '../primitives.js';
 import {
   CONTENT_HALF,
+  STREAM_CASCADES,
+  STREAM_STONES,
   lerp,
   streamBankHalf,
   streamCenterX,
@@ -38,38 +24,32 @@ import {
 
 const Z_START = -CONTENT_HALF;
 const Z_END = CONTENT_HALF;
-/** 站点间距：0.7 m 是最短波长，至少 4 个站点才撑得住一条波 */
-const SAMPLE_PITCH = 0.175;
-const SEARCH_STEP = 0.05;
-const SEARCH_OUTER = 2.2;
+const SAMPLE_PITCH = 0.16;
+const SEARCH_STEP = 0.045;
+const SEARCH_OUTER = 2.4;
 const BISECT_ITER = 24;
-/** 水线总宽小于此值的站点丢弃：只剩一条缝的水没有意义，只会在岸边留下毛刺 */
 const MIN_WATER_WIDTH = 0.12;
-/** 相邻站点 z 落差超过此值即断流，另起一段（每段一个 Mesh，不合并） */
 const RUN_GAP = 0.6;
 
 /* ------------------------------------------------------------------ 水面 */
 
-const WATER_COLS = 7;
+const WATER_COLS = 11;
 const WATER_RATIOS = [];
 for (let c = 0; c < WATER_COLS; c++) WATER_RATIOS.push(1 - (2 * c) / (WATER_COLS - 1));
-/** 水面 roughnessMap（水波细节贴图）的平铺尺寸：2.5 m 一格，比溪宽略大 */
-const WATER_UV_TILE = 2.5;
+const WATER_UV_TILE = 2.2;
 
 /* ------------------------------------------------------------------ 溪床 */
 
-/** 衬砌存在的最小水深（米）：小于此值的水膜不值得铺衬砌 */
 const DEPTH_MIN = 0.012;
-/** 衬砌相对地面的最大抬升（米） */
-const LIFT_FULL = 0.018;
-const MIN_LIFT = 0.006;
+const LIFT_FULL = 0.016;
+const MIN_LIFT = 0.005;
 const MIN_BED_WIDTH = 0.15;
-/** 与 terrain.js 的 SOIL_UV_TILE.soilStreamBed 必须一致，否则同一张砂底贴图会错位 */
 const BED_UV_TILE = 4;
 
-const PEBBLE_COUNT = 90;
+const PEBBLE_COUNT = 120;
 const PEBBLE_TILE = 0.16;
-const BAR_COUNT = 8;
+const BAR_COUNT = 10;
+const SUNKEN_LEAF_COUNT = 48;
 
 /* ------------------------------------------------------------------ 站点测量 */
 
@@ -84,10 +64,6 @@ function stationZs() {
   return out;
 }
 
-/**
- * 沿 dir 方向求「地面升到水面」的位置（返回最后一个仍在水面之下的偏移量）。
- * 找不到穿越点时退回名义半宽 —— 只可能发生在整段都不出露的异常地形上。
- */
 function waterlineEdge(cx, z, wy, half, dir) {
   if (terrainHeight(cx, z) >= wy) return 0;
   let prev = 0;
@@ -108,7 +84,6 @@ function waterlineEdge(cx, z, wy, half, dir) {
   return half;
 }
 
-/** 沿 dir 方向求「水深小于 DEPTH_MIN」的位置（衬砌外沿，比水线更靠内） */
 function bedlineEdge(cx, z, wy, half, dir) {
   if (wy - terrainHeight(cx, z) < DEPTH_MIN) return 0;
   let prev = 0;
@@ -129,12 +104,11 @@ function bedlineEdge(cx, z, wy, half, dir) {
   return 0;
 }
 
-/** 衬砌顶面高度：永远严格低于水面、严格高于地面 */
 function liningY(x, z, wy) {
   const ground = terrainHeight(x, z);
   const depth = wy - ground;
-  const lift = Math.min(LIFT_FULL, Math.max(MIN_LIFT, 0.5 * depth));
-  return Math.min(ground + lift, wy - 0.004);
+  const lift = Math.min(LIFT_FULL, Math.max(MIN_LIFT, 0.45 * depth));
+  return Math.min(ground + lift, wy - 0.006);
 }
 
 let measured = null;
@@ -180,7 +154,6 @@ function splitRuns(stations, pick) {
   return runs;
 }
 
-/** 站点为主序的横断面网格：列沿 +x 推进、站点沿 +z 推进 ⇒ 法线朝 +Y */
 function sheetGeometry(run, columns, vertexFn) {
   const position = [];
   const index = [];
@@ -206,7 +179,6 @@ function sheetGeometry(run, columns, vertexFn) {
   return geo;
 }
 
-/** 平铺 uv：世界米 / 平铺尺寸，与 terrain.js 的 addPlanarUv 完全同一约定 */
 function addPlanarUv(geo, tileMeters) {
   const position = geo.getAttribute('position');
   const uv = new Float32Array(position.count * 2);
@@ -218,9 +190,165 @@ function addPlanarUv(geo, tileMeters) {
   return geo;
 }
 
-/* ------------------------------------------------------------------ 水面 */
+/* ------------------------------------------------------------------ 小瀑布水帘与漩涡回流几何 */
 
-/** 溪口断面：把最后一段水面的末端封住，否则从 +Z 方向看进去是一张空壳 */
+/**
+ * 自然不规则泡沫盘几何体（避免规则圆环靶心感，还原真实瀑下漩涡与散碎水沫）
+ */
+function eddyFoamGeometry(radius, seed) {
+  const segs = 22;
+  const rings = 3;
+  const pos = [0, 0, 0];
+  const uv = [0.5, 0.5];
+  const idx = [];
+  for (let k = 1; k <= rings; k++) {
+    const u = k / rings;
+    for (let s = 0; s < segs; s++) {
+      const a = (s / segs) * Math.PI * 2;
+      const wobble = 1 + 0.16 * Math.sin(a * 3 + seed) + 0.1 * Math.cos(a * 5 - seed * 0.7);
+      const rad = radius * u * wobble;
+      const x = Math.cos(a) * rad;
+      const z = Math.sin(a) * rad * 0.84;
+      pos.push(x, (1 - u) * 0.004, z);
+      uv.push(0.5 + 0.5 * u * Math.cos(a), 0.5 + 0.5 * u * Math.sin(a));
+    }
+  }
+  for (let s = 0; s < segs; s++) {
+    const next = (s + 1) % segs;
+    idx.push(0, 1 + next, 1 + s);
+  }
+  for (let k = 1; k < rings; k++) {
+    const base0 = 1 + (k - 1) * segs;
+    const base1 = 1 + k * segs;
+    for (let s = 0; s < segs; s++) {
+      const next = (s + 1) % segs;
+      const a = base0 + s;
+      const b = base0 + next;
+      const d = base1 + s;
+      const e = base1 + next;
+      idx.push(a, b, e, a, e, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * 构建一级小瀑布的自然宽幅多股跌水水帘与瀑下漩涡回流（仿照参考图3的叠石跌水层次）
+ */
+function buildCascadeCurtains(root, M, rand) {
+  let count = 0;
+  const foamMat = M.waterfallFoam || M.waterSurface;
+  const eddyMat = M.waterEddy || M.waterSurface;
+
+  STREAM_CASCADES.forEach((cas, cIdx) => {
+    const zTop = cas.z - cas.halfSpan * 0.75;
+    const zBot = cas.z + cas.halfSpan * 0.82;
+    const yTop = waterY(zTop) + 0.004;
+    const yBot = waterY(zBot) + 0.006;
+    const cxTop = streamCenterX(zTop);
+    const cxBot = streamCenterX(zBot);
+    const halfW = streamBankHalf(cas.z) * 0.74;
+
+    // 整幅连续但纵向起伏分股的自然瀑布水帘（带归一化 UV 供着色器边缘羽化）
+    const cols = 16;
+    const rows = 10;
+    const pos = [];
+    const uv = [];
+    const idx = [];
+    for (let r = 0; r <= rows; r++) {
+      const u = r / rows;
+      const z = lerp(zTop, zBot, u);
+      const dropCurve = Math.pow(u, 1.48);
+      const arch = Math.sin(u * Math.PI) * 0.032;
+      const yBase = lerp(yTop, yBot, dropCurve) + arch;
+      const cx = lerp(cxTop, cxBot, u);
+      const w = halfW * 2 * (0.92 + 0.14 * Math.sin(u * Math.PI));
+
+      for (let c = 0; c <= cols; c++) {
+        const vn = c / cols;
+        const v = vn - 0.5;
+        const edgeTaper = Math.sin(vn * Math.PI);
+        // 多股水舌起伏肋条
+        const ribs = (0.5 + 0.5 * Math.sin(vn * Math.PI * 5 + cIdx * 1.3)) * 0.022 * edgeTaper;
+        const x = cx + v * w;
+        const dz = Math.sin(vn * Math.PI * 3 + u * 2.2) * 0.035 * edgeTaper;
+        pos.push(x, yBase + ribs, z + dz);
+        uv.push(vn, u);
+      }
+    }
+    const stride = cols + 1;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const a = r * stride + c;
+        const b = a + 1;
+        const d = (r + 1) * stride + c;
+        const e = d + 1;
+        idx.push(a, d, b, b, d, e);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+
+    const curtain = mesh(geo, foamMat, `streamWater-cascade-${cIdx}`);
+    curtain.castShadow = false;
+    curtain.receiveShadow = false;
+    curtain.userData.noCast = true;
+    curtain.userData.noReceive = true;
+    curtain.userData.noOutline = true;
+    curtain.userData.cascadeCurtain = { phase: cIdx * 1.7 };
+    root.add(curtain);
+    count += 1;
+
+    // 瀑下深潭的不规则旋转漩涡水沫团
+    const eddySpots = [
+      { dx: -halfW * 0.22, dz: cas.halfSpan * 0.85, r: 0.34, speed: 0.75 },
+      { dx: halfW * 0.26, dz: cas.halfSpan * 1.12, r: 0.28, speed: -0.85 }
+    ];
+    eddySpots.forEach((eSpec, eIdx) => {
+      const ez = cas.z + eSpec.dz;
+      const ex = streamCenterX(ez) + eSpec.dx;
+      const ey = waterY(ez) + 0.005;
+      const eGeo = eddyFoamGeometry(eSpec.r, 5100 + cIdx * 19 + eIdx * 7);
+      const eddy = mesh(eGeo, eddyMat, `streamWater-eddy-${cIdx}-${eIdx}`);
+      eddy.position.set(ex, ey, ez);
+      eddy.castShadow = false;
+      eddy.receiveShadow = false;
+      eddy.userData.noCast = true;
+      eddy.userData.noReceive = true;
+      eddy.userData.noOutline = true;
+      eddy.userData.eddySpin = { speed: eSpec.speed, phase: rand() * Math.PI * 2 };
+      root.add(eddy);
+      count += 1;
+    });
+  });
+
+  // 溪内石块（STREAM_STONES）周围的不规则分水漩涡水沫
+  STREAM_STONES.forEach((st, idx) => {
+    const wy = waterY(st.z) + 0.005;
+    const wGeo = eddyFoamGeometry(st.r * 1.32, 6200 + idx * 23);
+    const wake = mesh(wGeo, eddyMat, `streamWater-stoneWake-${idx}`);
+    wake.position.set(st.x, wy, st.z + 0.06);
+    wake.castShadow = false;
+    wake.receiveShadow = false;
+    wake.userData.noCast = true;
+    wake.userData.noReceive = true;
+    wake.userData.noOutline = true;
+    wake.userData.eddySpin = { speed: (idx % 2 === 0 ? 0.55 : -0.55), phase: idx * 1.3 };
+    root.add(wake);
+    count += 1;
+  });
+
+  return count;
+}
+
 function mouthGeometry(st) {
   const position = [];
   const index = [];
@@ -245,9 +373,7 @@ function mouthGeometry(st) {
 }
 
 /**
- * 山涧水面。
- * @param {object} M 材质库
- * @returns {THREE.Group} 根名 streamWater
+ * 山涧水面（含清澈主水面、6 级小瀑布水帘、深潭漩涡回流与溪石激流尾迹）。
  */
 export function createStreamWater(M) {
   const root = group('streamWater');
@@ -266,7 +392,6 @@ export function createStreamWater(M) {
     addPlanarUv(geo, WATER_UV_TILE);
 
     const sheet = mesh(geo, M.waterSurface, `streamWater-surface-${runIndex}`);
-    // 顶点局部坐标即世界坐标：stream-flow.js 直接按局部坐标施加波位移
     sheet.castShadow = false;
     sheet.receiveShadow = false;
     sheet.userData.noCast = true;
@@ -295,6 +420,9 @@ export function createStreamWater(M) {
     }
   });
 
+  const rand = rng(8821);
+  meshCount += buildCascadeCurtains(root, M, rand);
+
   root.userData.samples = samples;
   root.userData.runCount = runs.length;
   root.userData.meshCount = meshCount;
@@ -302,14 +430,14 @@ export function createStreamWater(M) {
   return root;
 }
 
-/* ------------------------------------------------------------------ 溪床 */
+/* ------------------------------------------------------------------ 溪床（清澈水体下可见的泥土、跌水石堰、卵石与沉叶） */
 
 function gravelBarGeometry(radius, seed) {
   return rockGeometry(radius, seed, {
     widthSegments: 12,
     heightSegments: 8,
-    wobble: 0.12,
-    flatten: 0.12
+    wobble: 0.14,
+    flatten: 0.14
   });
 }
 
@@ -318,16 +446,21 @@ function pebbleGeometry(radius, seed) {
     widthSegments: 14,
     heightSegments: 9,
     wobble: 0.28,
-    flatten: 0.62
+    flatten: 0.58
+  });
+}
+
+function weirBoulderGeometry(radius, seed) {
+  return rockGeometry(radius, seed, {
+    widthSegments: 14,
+    heightSegments: 10,
+    wobble: 0.22,
+    flatten: 0.46
   });
 }
 
 /**
- * 山涧溪床：砂质衬砌 + 冲刷砾石条 + 溪底卵石。
- * 每一块卵石 / 每一条砾石条都是独立 Mesh（不合并、不实例化），
- * 因为它们的材质、贴图平铺尺寸与埋入深度各不相同。
- * @param {object} M 材质库
- * @returns {THREE.Group} 根名 streamBed
+ * 山涧溪床：深色湿泥砂底 + 6 级小瀑布天然叠石堰（仿照参考图3）+ 冲刷砾石条 + 溪底鹅卵石 + 水下沉叶。
  */
 export function createStreamBed(M) {
   const root = group('streamBed');
@@ -355,30 +488,60 @@ export function createStreamBed(M) {
     meshCount += 1;
   });
 
-  // 卵石与砾石条沿整条溪按站点均匀撒，避免只在某一段堆一堆
   const all = runs.flat();
   const rand = rng(4127);
 
+  // 1. 6 级小瀑布天然跌水石堰（Weir Boulders）：横亘在每级小瀑布两侧与堰口，形成多层次叠石跌水
+  STREAM_CASCADES.forEach((cas, cIdx) => {
+    const cx = streamCenterX(cas.z);
+    const half = streamBankHalf(cas.z);
+    const wy = waterY(cas.z);
+    const weirSlots = [
+      { dx: -half * 0.74, dz: -0.1, r: 0.34, mat: M.stoneRock },
+      { dx: -half * 0.28, dz: 0.05, r: 0.25, mat: M.stoneStream },
+      { dx: half * 0.26, dz: -0.04, r: 0.24, mat: M.stoneStream },
+      { dx: half * 0.74, dz: 0.08, r: 0.35, mat: M.mossStone }
+    ];
+    weirSlots.forEach((slot, sIdx) => {
+      const wx = cx + slot.dx + (rand() - 0.5) * 0.06;
+      const wz = cas.z + slot.dz;
+      const g = terrainHeight(wx, wz);
+      // 两侧护堰大石微露水面，中间堰石半浸水中让瀑流漫过
+      const isOuter = Math.abs(slot.dx) > half * 0.5;
+      const wyLocal = isOuter ? wy + slot.r * 0.14 : wy - slot.r * 0.06;
+      const y = Math.max(g + slot.r * 0.12, wyLocal);
+      const geo = triplanarUv(weirBoulderGeometry(slot.r, 8200 + cIdx * 31 + sIdx * 7), 0.65);
+      const stone = mesh(geo, slot.mat, `streamBed-weir-${cIdx}-${sIdx}`);
+      place(stone, { x: wx, y, z: wz, ry: rand() * Math.PI * 2 });
+      stone.castShadow = isOuter;
+      stone.receiveShadow = true;
+      stone.userData.noCast = !isOuter;
+      stone.userData.noOutline = !isOuter;
+      root.add(stone);
+      samples.push({ x: wx, y, z: wz });
+      meshCount += 1;
+    });
+  });
+
+  // 2. 水下泥沙冲刷砾石条
   const barsPerRun = runs.map((run) => Math.max(1, Math.round((BAR_COUNT * run.length) / all.length)));
   let barIndex = 0;
   runs.forEach((run, runIndex) => {
     const count = barsPerRun[runIndex];
     for (let i = 0; i < count; i++) {
       const st = run[Math.floor(((i + 0.5) / count) * run.length)];
-      const radius = 0.28 + rand() * 0.12;
+      const radius = 0.28 + rand() * 0.14;
       const x = st.cx + lerp(-st.bedLeft, st.bedRight, 0.2 + rand() * 0.6);
       const ground = liningY(x, st.z, st.wy);
-      const topAboveGround = radius * 0.12 * 1.35;
-      // 砾石条顶面必须留在水面之下，否则「冲刷痕迹」会变成露出水面的沙堆
-      const y = Math.min(ground + 0.015, st.wy - 0.025 - topAboveGround);
+      const topAboveGround = radius * 0.14 * 1.35;
+      const y = Math.min(ground + 0.015, st.wy - 0.022 - topAboveGround);
       const geo = triplanarUv(gravelBarGeometry(radius, 7100 + barIndex * 37), BED_UV_TILE);
-      const bar = mesh(geo, M.soilStreamBed, `streamBed-bar-${barIndex}`);
+      const bar = mesh(geo, M.soilBank, `streamBed-bar-${barIndex}`);
       bar.position.set(x, y, st.z);
       bar.rotation.y = rand() * Math.PI;
       bar.castShadow = false;
       bar.receiveShadow = true;
       bar.userData.noCast = true;
-      // 水下的描边壳只会糊成一团黑影，边缘由水面自己提供
       bar.userData.noOutline = true;
       root.add(bar);
       samples.push({ x, y, z: st.z });
@@ -387,24 +550,21 @@ export function createStreamBed(M) {
     }
   });
 
+  // 3. 溪底深浅鹅卵石与河床碎石（透过清澈溪水清晰可见）
   const pebblesPerRun = runs.map((run) => Math.max(1, Math.round((PEBBLE_COUNT * run.length) / all.length)));
   let pebbleIndex = 0;
   runs.forEach((run, runIndex) => {
     const count = pebblesPerRun[runIndex];
     for (let i = 0; i < count; i++) {
       const st = run[Math.floor(rand() * run.length)];
-      const radius = 0.04 + rand() * 0.06;
-      const x = st.cx + lerp(-st.bedLeft, st.bedRight, 0.1 + rand() * 0.8);
+      const radius = 0.045 + rand() * 0.075;
+      const x = st.cx + lerp(-st.bedLeft, st.bedRight, 0.08 + rand() * 0.84);
       const ground = liningY(x, st.z, st.wy);
-      // rockGeometry 的底在 origin 下方 0.65·flatten·r ⇒ 抬 0.25r 正好埋进溪底约 0.15r
-      const y = ground + 0.25 * radius;
+      const y = ground + 0.24 * radius;
       const geo = triplanarUv(pebbleGeometry(radius, 9100 + pebbleIndex * 53), PEBBLE_TILE);
-      const useStreamStone = rand() < 0.45;
-      const pebble = mesh(
-        geo,
-        useStreamStone ? M.stoneStream : M.stonePebble,
-        `streamBed-gravel-${pebbleIndex}`
-      );
+      const pick = rand();
+      const mat = pick < 0.4 ? M.stoneStream : pick < 0.75 ? M.stonePebble : M.mossStone;
+      const pebble = mesh(geo, mat, `streamBed-gravel-${pebbleIndex}`);
       pebble.position.set(x, y, st.z);
       pebble.rotation.y = rand() * Math.PI * 2;
       pebble.castShadow = false;
@@ -417,6 +577,25 @@ export function createStreamBed(M) {
       pebbleIndex += 1;
     }
   });
+
+  // 4. 溪底泥沙上的沉水红褐落叶（增加「清澈见底」的视觉参照物）
+  const leafGeo = leafSheetGeometry({ kind: 'maple', size: 0.085, thickness: 0.003, curl: 0.18, steps: 14 });
+  leafGeo.rotateX(-Math.PI / 2);
+  const leafMats = [M.leafSheetGroundRust, M.leafSheetGroundLight, M.leafSheetGround];
+  for (let i = 0; i < SUNKEN_LEAF_COUNT; i++) {
+    const st = all[Math.floor(rand() * all.length)];
+    if (!st) continue;
+    const lx = st.cx + lerp(-st.bedLeft * 0.75, st.bedRight * 0.75, rand());
+    const ly = liningY(lx, st.z, st.wy) + 0.008;
+    const leaf = mesh(leafGeo, leafMats[i % leafMats.length], `streamBed-leaf-${i}`);
+    place(leaf, { x: lx, y: ly, z: st.z, ry: rand() * Math.PI * 2 });
+    leaf.castShadow = false;
+    leaf.receiveShadow = true;
+    leaf.userData.noCast = true;
+    leaf.userData.noOutline = true;
+    root.add(leaf);
+    meshCount += 1;
+  }
 
   root.userData.samples = samples;
   root.userData.runCount = runs.length;

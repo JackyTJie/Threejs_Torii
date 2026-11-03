@@ -1,9 +1,9 @@
 // 离线 DOM 桩：让 core/textures.js 与入口模块能在 Node 中构建（不参与浏览器运行）
-function makeContext2D(width, height) {
+function makeContext2D(canvas) {
   const gradient = { addColorStop() {} };
   const noop = () => {};
   return {
-    canvas: { width, height },
+    canvas,
     globalAlpha: 1,
     globalCompositeOperation: 'source-over',
     fillStyle: '#000',
@@ -61,7 +61,9 @@ function makeContext2D(width, height) {
       height: h,
       data: new Uint8ClampedArray(Math.max(1, w | 0) * Math.max(1, h | 0) * 4)
     }),
-    putImageData: noop
+    putImageData(imageData) {
+      canvas._imageData = imageData;
+    }
   };
 }
 
@@ -69,6 +71,7 @@ export function makeCanvas(width = 512, height = 512) {
   const canvas = {
     width,
     height,
+    _imageData: null,
     style: {},
     clientWidth: width,
     clientHeight: height,
@@ -82,7 +85,7 @@ export function makeCanvas(width = 512, height = 512) {
     getAttribute: () => null,
     appendChild() {},
     getContext(type) {
-      if (type === '2d') return makeContext2D(canvas.width, canvas.height);
+      if (type === '2d') return makeContext2D(canvas);
       return null;
     }
   };

@@ -19,7 +19,7 @@
  * terrainPatchGeometry 与 rockGeometry 都不产出 uv，而贴图一律 repeat(1,1)，
  * 所以平铺尺寸在这里按世界米自己算（泥面 5 m、土块 0.55 m、碎石 0.16 m）。
  */
-import { PATH, groundHeight } from '../layout.js';
+import { PATH, groundHeight, pathBoundsAt, streamBankHalf, streamCenterX } from '../layout.js';
 import {
   group,
   leafSheetGeometry,
@@ -57,9 +57,13 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 
 const SIDES = [
-  { key: 'left', dir: -1, inner: PATH.x0, wetBias: 0.3 },
-  { key: 'right', dir: 1, inner: PATH.x1, wetBias: 0 }
+  { key: 'left', dir: -1, wetBias: 0.3 },
+  { key: 'right', dir: 1, wetBias: 0 }
 ];
+
+function sideInnerX(side, z) {
+  return side.dir < 0 ? pathBoundsAt(z).x0 : pathBoundsAt(z).x1;
+}
 
 /** 沿 z 的分段断点：每段长度随机，末段被 Z_END 截断 */
 function segmentBreaks(seed) {
@@ -73,10 +77,16 @@ function segmentBreaks(seed) {
   return zs;
 }
 
-/** 泥带外缘 x：宽度随 z 连续摆动 */
+/** 泥带外缘 x：宽度随 z 连续摆动，贴合弯曲参道，左侧严格止于溪岸之外 */
 function bandOuterX(side, zCenter, seed) {
+  const inner = sideInnerX(side, zCenter);
   const w = lerp(BAND_WIDTH[0], BAND_WIDTH[1], clamp(fbm3(zCenter * 0.42, seed, 0.7, 3), 0, 1));
-  return side.inner + side.dir * (INNER_GAP + w);
+  const raw = inner + side.dir * (INNER_GAP + w);
+  if (side.dir < 0) {
+    const streamLim = streamCenterX(zCenter) + streamBankHalf(zCenter) + 0.16;
+    return Math.min(inner - INNER_GAP - 0.06, Math.max(raw, streamLim));
+  }
+  return raw;
 }
 
 /** 湿泥 / 干泥：下段汇水 + 靠溪一侧更湿 */
@@ -133,7 +143,8 @@ export function createPathSoil(M, options = {}) {
       const seed = 900 + i * 37 + (side.dir > 0 ? 511 : 0);
       const rand = rng(seed);
 
-      const xIn = side.inner + side.dir * INNER_GAP;
+      const inner = sideInnerX(side, zc);
+      const xIn = inner + side.dir * INNER_GAP;
       const xOut = bandOuterX(side, zc, seed);
       const groundIn = groundHeight(xIn, zc);
       const groundOut = groundHeight(xOut, zc);
@@ -150,7 +161,7 @@ export function createPathSoil(M, options = {}) {
 
       // 泥唇：贴着石阶立面的一条窄泥脊，用剖切面色，把「石阶嵌在土里」这件事说清楚
       const lipW = lerp(LIP_WIDTH[0], LIP_WIDTH[1], rand());
-      const lipOut = side.inner + side.dir * (INNER_GAP + lipW);
+      const lipOut = inner + side.dir * (INNER_GAP + lipW);
       const lip = mesh(soilSheet(xIn, lipOut, zBack, zFront, seed + 13), M.soilCut, `pathSoilLip-${side.key}-${i}`);
       lip.position.y = LIP_LIFT - MUD_LIFT;
       lip.castShadow = false;

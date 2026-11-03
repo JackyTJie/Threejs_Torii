@@ -252,11 +252,14 @@ export function streamFlowDirection() {
   return new THREE.Vector2(dx / len, dz / len);
 }
 
+/** 已启用水流片元着色的材质（animations/stream-flow.js 逐帧推进它们的 uTime） */
+export const WATER_FLOW_MATERIALS = [];
+
 /**
- * 水面颜色流：顺流推进的亮带 + 掠射反光。
+ * 水面颜色流：顺流推进的焦散波光 + 漩涡回流 + 叠瀑白沫。
  * 几何波由 animations/stream-flow.js 在 CPU 上做（见 docs/ASSET_INDEX.md §59 / §61）。
  */
-export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength = 1 } = {}) {
+export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength = 1, overlayMode = 0 } = {}) {
   const uniforms = bindUniforms(material, {
     uTime: { value: 0 },
     uFlowSpeed: { value: speed },
@@ -264,19 +267,32 @@ export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength
     uShallowColor: { value: new THREE.Color(PALETTE.waterShallow) },
     uDeepColor: { value: new THREE.Color(PALETTE.waterDeep) },
     uFlowScale: { value: scale },
-    uFlowStrength: { value: strength }
+    uFlowStrength: { value: strength },
+    uOverlayMode: { value: overlayMode }
   });
   composeBeforeCompile(material, (shader) => {
     Object.assign(shader.uniforms, uniforms);
     injectWorldPosition(shader);
+    if (!shader.__waterLocalUv) {
+      shader.__waterLocalUv = true;
+      shader.vertexShader = `varying vec2 vWaterLocalUv;\n${shader.vertexShader}`;
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <uv_vertex>',
+        `#include <uv_vertex>\nvWaterLocalUv = uv;`
+      );
+      shader.fragmentShader = `varying vec2 vWaterLocalUv;\n${shader.fragmentShader}`;
+    }
     injectGlobals(shader, `${WATER_FLOW_UNIFORMS}\n${WATER_FLOW_FRAG}`);
     injectSurface(shader, `{
         vec3 waterViewDirV = normalize( vViewPosition );
-        outgoingLight = waterFlow( outgoingLight, vStationWorldPos, normal, waterViewDirV );
+        vec4 waterFlowOut = waterFlow( outgoingLight, diffuseColor.a, vStationWorldPos, normal, waterViewDirV, vWaterLocalUv );
+        outgoingLight = waterFlowOut.rgb;
+        diffuseColor.a = waterFlowOut.a;
       }`);
     material.userData.shader = shader;
   });
   material.userData.waterFlow = true;
+  if (!WATER_FLOW_MATERIALS.includes(material)) WATER_FLOW_MATERIALS.push(material);
   return material;
 }
 
