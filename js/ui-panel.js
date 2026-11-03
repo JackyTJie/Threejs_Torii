@@ -805,7 +805,7 @@ export function createSettingsPanel({ post, lighting, dayNight, weather, animati
     highlightWeather('clear');
     timeRow.setValue(10.5);
     godRayRow.setValue(1.0);
-    lanternRow.setValue(0.38);
+    lanternRow.setValue(0.15);
     ssaoRow.setValue(1.0);
     fogDensityRow.setValue(0.24);
     fogSpeedRow.setValue(0.35);

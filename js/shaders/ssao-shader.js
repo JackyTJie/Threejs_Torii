@@ -449,8 +449,8 @@ export const SSAO_FOG_FS = /* glsl */ `
         if ( uLanternIntensity > 0.01 ) {
           float dLanternL = length( sampleP - uLanternPosL );
           float dLanternR = length( sampleP - uLanternPosR );
-          float lanternScatter = ( 1.0 / ( 1.0 + dLanternL * dLanternL * 1.35 ) + 1.0 / ( 1.0 + dLanternR * dLanternR * 1.35 ) );
-          accumInscatter += vec3( 1.0, 0.66, 0.22 ) * lanternScatter * uLanternIntensity * ( 0.022 + localRho * 0.045 ) * stepLen;
+          float lanternScatter = ( 1.0 / ( 1.0 + dLanternL * dLanternL * 3.8 ) + 1.0 / ( 1.0 + dLanternR * dLanternR * 3.8 ) );
+          accumInscatter += vec3( 1.0, 0.70, 0.28 ) * lanternScatter * uLanternIntensity * ( 0.007 + localRho * 0.015 ) * stepLen;
         }
       }
 

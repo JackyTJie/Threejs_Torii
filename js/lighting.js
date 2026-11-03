@@ -97,11 +97,11 @@ export function createLighting(scene) {
   ambient.name = 'baseAmbient';
   group.add(ambient);
 
-  // 参道鸟居前左右对称春日木灯笼的暖黄微光点光源
+  // 参道鸟居前左右对称春日木灯笼的暖黄微光点光源（柔和收敛范围，避免大面积染色周围树叶）
   const lanternLights = [];
-  let lanternBrightness = 0.42;
+  let lanternBrightness = 0.15;
   for (const pos of getShrineLanternWorldPositions()) {
-    const pt = new THREE.PointLight(0xffad42, lanternBrightness * 1.45, 5.2, 1.6);
+    const pt = new THREE.PointLight(0xffb454, lanternBrightness * 0.72, 2.8, 2.0);
     pt.name = `lanternLight-${pos.side}`;
     pt.position.set(pos.x, pos.y, pos.z);
     pt.castShadow = false;
@@ -112,10 +112,10 @@ export function createLighting(scene) {
   function setLanternBrightness(v) {
     lanternBrightness = Math.max(0, Math.min(2.5, Number(v) || 0));
     for (const pt of lanternLights) {
-      pt.intensity = lanternBrightness * 1.55;
+      pt.intensity = lanternBrightness * 0.72;
     }
     for (const mat of LANTERN_GLOW_MATERIALS) {
-      mat.emissiveIntensity = 0.08 + lanternBrightness * 0.85;
+      mat.emissiveIntensity = 0.06 + lanternBrightness * 0.55;
     }
   }
 

@@ -178,26 +178,28 @@ export const WATER_FLOW_FRAG = /* glsl */ `
   }
 
   /**
-   * 粒子化蜂窝气泡与飞溅水珠场（复现参考图 1/3/4/5 中瀑布落水潭与岩石激流的颗粒状翻涌白水）：
-   * 结合 Voronoi 气蚀泡孔与高速对流水珠点阵，呈现真实碎珠飞沫质感而非平滑色块。
+   * 细小水点飞溅场（仅保留针尖级细碎水滴点阵闪烁后消失，去除大块蜂窝色斑与圆饼）
    */
   float evalParticleFoamField( vec2 flowUv, float time ) {
-    // 1) 翻滚气泡团网络（气泡边缘白沫聚集、泡心微透水色，如图 1 落水潭前缘）
-    vec2 cellUv1 = flowUv * vec2( 9.5, 6.2 ) + vec2( 0.0, -time * 3.8 );
-    vec2 cellUv2 = flowUv * vec2( 18.0, 11.5 ) + vec2( 3.7, -time * 5.6 );
-    float n1 = waterNoise( cellUv1 );
-    float n2 = waterNoise( cellUv2 );
-    float bubbleWeb = 1.0 - abs( n1 * 2.0 - 1.0 );
-    float fineBubbles = smoothstep( 0.42, 0.85, bubbleWeb * 0.65 + n2 * 0.35 );
+    vec2 dropGrid1 = flowUv * vec2( 46.0, 28.0 ) + vec2( sin( flowUv.y * 9.0 ) * 0.7, -time * 9.5 );
+    vec2 cell1 = floor( dropGrid1 );
+    vec2 frac1 = fract( dropGrid1 ) - 0.5;
+    float seed1 = waterHash21( cell1 );
+    float life1 = fract( seed1 * 7.3 + time * 1.8 );
+    float vanish1 = sin( life1 * 3.14159 ) * ( 1.0 - life1 * 0.7 );
+    vec2 jit1 = vec2( fract( seed1 * 13.1 ) - 0.5, fract( seed1 * 29.7 ) - 0.5 ) * 0.36;
+    float droplet1 = step( 0.68, seed1 ) * ( 1.0 - smoothstep( 0.04, 0.22 * vanish1 + 0.05, length( frac1 - jit1 ) ) ) * vanish1;
 
-    // 2) 高速飞溅水珠颗粒点阵（Particle Droplet Speckles）
-    vec2 dropGrid = flowUv * vec2( 32.0, 16.0 ) + vec2( sin( flowUv.y * 8.0 ) * 0.8, -time * 8.5 );
-    vec2 dCell = floor( dropGrid );
-    vec2 dFrac = fract( dropGrid ) - 0.5;
-    float dSeed = waterHash21( dCell );
-    float droplet = step( 0.62, dSeed ) * ( 1.0 - smoothstep( 0.06, 0.36, length( dFrac ) ) );
+    vec2 dropGrid2 = flowUv * vec2( 74.0, 44.0 ) + vec2( cos( flowUv.x * 11.0 ) * 0.6, -time * 12.2 );
+    vec2 cell2 = floor( dropGrid2 );
+    vec2 frac2 = fract( dropGrid2 ) - 0.5;
+    float seed2 = waterHash21( cell2 );
+    float life2 = fract( seed2 * 11.7 + time * 2.3 );
+    float vanish2 = sin( life2 * 3.14159 ) * ( 1.0 - life2 * 0.7 );
+    vec2 jit2 = vec2( fract( seed2 * 17.3 ) - 0.5, fract( seed2 * 31.9 ) - 0.5 ) * 0.36;
+    float droplet2 = step( 0.64, seed2 ) * ( 1.0 - smoothstep( 0.03, 0.20 * vanish2 + 0.04, length( frac2 - jit2 ) ) ) * vanish2;
 
-    return clamp( fineBubbles * 0.72 + droplet * 0.58, 0.0, 1.0 );
+    return clamp( droplet1 * 0.85 + droplet2 * 0.75, 0.0, 1.0 );
   }
 
   float linearizeDepth( float d, float zNear, float zFar ) {

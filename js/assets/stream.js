@@ -312,17 +312,18 @@ function buildFeatheredCascadeSheets(root, M) {
   return count;
 }
 
-/* ------------------------------------------------------------------ 三维粒子化水流、瀑布飞珠与落水潭白沫系统（复现参考图 1/3/4/5） */
+/* ------------------------------------------------------------------ 三维细小水点飞溅与消失粒子系统（无圆饼、仅细小水珠抛物线溅射后消失） */
 
 function buildStreamParticleSystems(root, M) {
   const rand = rng(9413);
   const sprayMat = M.waterSprayParticle || M.waterfallFoam || M.waterSurface;
-  const foamMat = M.waterFoamCluster || M.waterfallFoam || M.waterSurface;
   const dummy = new THREE.Object3D();
 
-  // 1) 瀑布分股抛物线水帘丝缕与飞落水珠粒子（720 颗，分布在 6 级叠瀑石堰的多股水舌上，复现参考图 1）
-  const jetGeo = new THREE.SphereGeometry(0.016, 6, 5);
-  const jetInst = new THREE.InstancedMesh(jetGeo, sprayMat, JET_PARTICLE_COUNT);
+  // 统一采用极细小球形水滴几何体（半径仅 5.2mm，彻底杜绝扁平圆饼状粒子）
+  const dropGeo = new THREE.SphereGeometry(0.0052, 5, 4);
+
+  // 1) 6 级叠瀑飞溅细小水点（720 颗：从石堰跌水口抛物线溅起，随下落逐渐缩小至消失）
+  const jetInst = new THREE.InstancedMesh(dropGeo, sprayMat, JET_PARTICLE_COUNT);
   jetInst.name = 'streamWater-jetParticles';
   jetInst.castShadow = false;
   jetInst.receiveShadow = true;
@@ -335,37 +336,36 @@ function buildStreamParticleSystems(root, M) {
   for (let i = 0; i < JET_PARTICLE_COUNT; i++) {
     const cIdx = Math.min(STREAM_CASCADES.length - 1, Math.floor(i / jetsPerCas));
     const cas = STREAM_CASCADES[cIdx];
-    const zTop = cas.z - cas.halfSpan * 0.65;
-    const zBot = cas.z + cas.halfSpan * 0.72;
-    const yTop = waterY(zTop) + 0.012;
-    const yBot = waterY(zBot) + 0.008;
+    const zTop = cas.z - cas.halfSpan * 0.55;
+    const zBot = cas.z + cas.halfSpan * 0.68;
+    const yTop = waterY(zTop) + 0.010;
+    const yBot = waterY(zBot) + 0.004;
     const cxTop = streamCenterX(zTop);
     const cxBot = streamCenterX(zBot);
-    const halfW = streamBankHalf(cas.z) * 0.62;
+    const halfW = streamBankHalf(cas.z) * 0.60;
 
-    // 分为 11 股穿过岩石缝隙的独立水帘束（模拟图 1 中分股垂落的水柱丝缕）
     const strandIdx = i % 11;
     const strandU = (strandIdx / 10) * 2 - 1;
-    const lateralOffset = strandU * halfW * 0.88 + (rand() - 0.5) * 0.055;
-    const spreadOut = strandU * 0.045 + (rand() - 0.5) * 0.035;
+    const lateralOffset = strandU * halfW * 0.86 + (rand() - 0.5) * 0.065;
+    const spreadOut = (rand() - 0.5) * 0.09;
     const phase = rand();
-    const speed = 1.65 + rand() * 0.95;
-    const radiusScale = 0.68 + rand() * 0.68;
-    const isStreak = rand() < 0.62;
+    const speed = 1.85 + rand() * 1.15;
+    const leapArc = 0.024 + rand() * 0.052;
+    const radiusScale = 0.48 + rand() * 0.58;
 
     jetSpecs.push({
       cIdx, zTop, zBot, yTop, yBot, cxTop, cxBot,
-      lateralOffset, spreadOut, phase, speed, radiusScale, isStreak
+      lateralOffset, spreadOut, phase, speed, leapArc, radiusScale
     });
 
     const u = phase;
     const x = lerp(cxTop, cxBot, u) + lateralOffset + spreadOut * u;
     const z = lerp(zTop, zBot, u);
-    const y = lerp(yTop, yBot, u * u) + Math.sin(u * Math.PI) * 0.028;
+    const y = lerp(yTop, yBot, u * u) + Math.sin(u * Math.PI) * leapArc;
+    const vanishEnv = Math.sin(u * Math.PI) * (1 - u * 0.68);
     dummy.position.set(x, y, z);
-    dummy.rotation.set(0.55 + u * 0.65, 0, (rand() - 0.5) * 0.25);
-    const sy = isStreak ? radiusScale * (2.2 + 2.4 * u) : radiusScale * 1.15;
-    dummy.scale.set(radiusScale * 0.78, sy, radiusScale * 0.85);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.setScalar(Math.max(0.001, radiusScale * vanishEnv));
     dummy.updateMatrix();
     jetInst.setMatrixAt(i, dummy.matrix);
   }
@@ -373,9 +373,8 @@ function buildStreamParticleSystems(root, M) {
   jetInst.userData.streamParticles = { kind: 'jets', specs: jetSpecs };
   root.add(jetInst);
 
-  // 2) 落水潭翻滚白沫气泡团与飞溅水滴粒子（900 颗：分布在 6 级瀑布落水潭 + 8 处溪心乱石激流区，复现参考图 1/3/4/5）
-  const splashGeo = new THREE.IcosahedronGeometry(0.022, 1);
-  const splashInst = new THREE.InstancedMesh(splashGeo, foamMat, SPLASH_PARTICLE_COUNT);
+  // 2) 落水潭与溪石迎水面飞溅细小水珠（900 颗：全为细小水珠向上向外溅射，在空中抛物线回落过程中缩小消失，无任何圆饼）
+  const splashInst = new THREE.InstancedMesh(dropGeo, sprayMat, SPLASH_PARTICLE_COUNT);
   splashInst.name = 'streamWater-splashParticles';
   splashInst.castShadow = false;
   splashInst.receiveShadow = true;
@@ -385,52 +384,47 @@ function buildStreamParticleSystems(root, M) {
 
   const splashSpecs = [];
   for (let i = 0; i < SPLASH_PARTICLE_COUNT; i++) {
-    const isCascadePlunge = i < 620;
+    const isCascadePlunge = i < 580;
     let anchorX, anchorZ, anchorY, spanX, spanZ;
     if (isCascadePlunge) {
       const cas = STREAM_CASCADES[i % STREAM_CASCADES.length];
-      const zPlunge = cas.z + cas.halfSpan * 0.55;
+      const zPlunge = cas.z + cas.halfSpan * 0.42;
       anchorX = streamCenterX(zPlunge);
       anchorZ = zPlunge;
       anchorY = waterY(zPlunge);
-      spanX = streamBankHalf(cas.z) * 0.64;
-      spanZ = 0.42;
+      spanX = streamBankHalf(cas.z) * 0.62;
+      spanZ = 0.28;
     } else {
       const st = STREAM_STONES[i % STREAM_STONES.length];
       anchorX = st.x;
-      anchorZ = st.z - st.r * 0.25;
+      anchorZ = st.z - st.r * 0.22;
       anchorY = waterY(st.z);
-      spanX = st.r * 1.35;
-      spanZ = st.r * 1.45;
+      spanX = st.r * 1.15;
+      spanZ = st.r * 1.10;
     }
 
-    const isAirborneDrop = rand() < 0.42;
     const lat = (rand() - 0.5) * 2 * spanX;
-    const driftZ = rand() * spanZ;
+    const vx = (rand() - 0.5) * 0.16;
+    const vz = (rand() - 0.25) * spanZ;
     const phase = rand();
-    const speed = isAirborneDrop ? (2.1 + rand() * 1.2) : (0.95 + rand() * 0.75);
-    const leapH = isAirborneDrop ? (0.045 + rand() * 0.11) : (0.008 + rand() * 0.016);
-    const size = isAirborneDrop ? (0.42 + rand() * 0.45) : (0.75 + rand() * 1.15);
+    const speed = 2.1 + rand() * 1.45;
+    const leapH = 0.032 + rand() * 0.095;
+    const size = 0.42 + rand() * 0.56;
 
     splashSpecs.push({
-      anchorX, anchorY, anchorZ, lat, spanX, spanZ, driftZ,
-      phase, speed, leapH, size, isAirborneDrop
+      anchorX, anchorY, anchorZ, lat, vx, vz,
+      phase, speed, leapH, size
     });
 
     const u = phase;
-    const x = anchorX + lat * (0.75 + 0.35 * u);
-    const z = anchorZ + (u - 0.25) * spanZ;
+    const x = anchorX + lat + vx * u;
+    const z = anchorZ + vz * u;
     const wy = waterY(z);
-    const y = wy + 4 * u * (1 - u) * leapH + 0.006;
+    const y = wy + 4 * u * (1 - u) * leapH + 0.004;
+    const vanishEnv = Math.sin(u * Math.PI) * (1 - u * 0.72);
     dummy.position.set(x, y, z);
-    dummy.rotation.set(rand() * 3.14, rand() * 3.14, rand() * 3.14);
-    const env = Math.sin(u * Math.PI);
-    if (isAirborneDrop) {
-      dummy.scale.setScalar(size * (0.45 + 0.65 * env));
-    } else {
-      const sHoriz = size * (0.65 + 0.85 * Math.sin(u * Math.PI * 0.85));
-      dummy.scale.set(sHoriz, size * 0.32 * env, sHoriz * 1.15);
-    }
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.setScalar(Math.max(0.001, size * vanishEnv));
     dummy.updateMatrix();
     splashInst.setMatrixAt(i, dummy.matrix);
   }
@@ -438,9 +432,8 @@ function buildStreamParticleSystems(root, M) {
   splashInst.userData.streamParticles = { kind: 'splashes', specs: splashSpecs };
   root.add(splashInst);
 
-  // 3) 乱石急流槽流线水珠链粒子（540 颗：沿着蜿蜒溪道急流线与岩石分流槽高速穿行，增强流体粒子动态感）
-  const rapidGeo = new THREE.SphereGeometry(0.015, 5, 4);
-  const rapidInst = new THREE.InstancedMesh(rapidGeo, sprayMat, RAPID_PARTICLE_COUNT);
+  // 3) 乱石急流区跃起细小水星（540 颗：沿急流与岸石边缘短暂跃起闪烁后消失的微水滴）
+  const rapidInst = new THREE.InstancedMesh(dropGeo, sprayMat, RAPID_PARTICLE_COUNT);
   rapidInst.name = 'streamWater-rapidParticles';
   rapidInst.castShadow = false;
   rapidInst.receiveShadow = true;
@@ -457,23 +450,25 @@ function buildStreamParticleSystems(root, M) {
     const half = streamBankHalf(pt.z) * 0.62;
     const latRatio = (rand() - 0.5) * 1.85;
     const lat = latRatio * half;
-    const speed = 0.065 + rand() * 0.055;
-    const size = 0.55 + rand() * 0.65;
-    const phase = rand() * Math.PI * 2;
-    rapidSpecs.push({ u, latRatio, speed, size, phase });
+    const speed = 0.045 + rand() * 0.040;
+    const lifeSpeed = 2.4 + rand() * 1.6;
+    const leapH = 0.018 + rand() * 0.045;
+    const size = 0.38 + rand() * 0.48;
+    const phase = rand();
+    rapidSpecs.push({ u, latRatio, speed, lifeSpeed, leapH, size, phase });
 
     let x = pt.x + lat;
     const z = pt.z;
     for (const ob of obstacles) {
       const d = Math.hypot(x - ob.x, z - ob.z);
-      if (d < ob.r + 0.06) {
-        x = ob.x + (x >= ob.x ? 1 : -1) * (ob.r + 0.08);
+      if (d < ob.r + 0.05) {
+        x = ob.x + (x >= ob.x ? 1 : -1) * (ob.r + 0.07);
       }
     }
-    const y = waterY(z) + 0.008;
+    const y = waterY(z) + 0.006;
     dummy.position.set(x, y, z);
     dummy.rotation.set(0, 0, 0);
-    dummy.scale.set(size * 0.72, size * 0.42, size * 2.1);
+    dummy.scale.setScalar(size * 0.5);
     dummy.updateMatrix();
     rapidInst.setMatrixAt(i, dummy.matrix);
   }

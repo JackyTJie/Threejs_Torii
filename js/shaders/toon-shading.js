@@ -161,7 +161,7 @@ export const WEATHERING_FRAG = /* glsl */ `
     return 0.28 + 0.0992 * s + 0.032 * s * s;
   }
 
-  // 参道木灯笼 3×3 格栅地面投射光斑
+  // 参道木灯笼 3×3 格栅地面投射光斑（收敛在灯笼正下方石阶，不染色高处树叶）
   vec3 evalLanternLatticeGobo( vec3 worldPos, vec3 nrm ) {
     if ( uLanternIntensity <= 0.01 ) return vec3( 0.0 );
     vec3 totalGlow = vec3( 0.0 );
@@ -169,16 +169,16 @@ export const WEATHERING_FRAG = /* glsl */ `
       vec3 lPos = i == 0 ? uLanternPosL : uLanternPosR;
       vec3 toFrag = worldPos - lPos;
       float dist = length( toFrag );
-      if ( dist < 4.6 && toFrag.y < 0.25 ) {
+      if ( dist < 2.25 && toFrag.y < -0.15 ) {
         vec3 dir = toFrag / max( dist, 0.001 );
         float ndl = max( 0.0, dot( nrm, -dir ) );
-        float atten = exp( -dist * 0.72 ) * ( 1.0 - smoothstep( 0.6, 4.6, dist ) ) * ( 0.35 + 0.65 * ndl );
+        float atten = exp( -dist * 1.35 ) * ( 1.0 - smoothstep( 0.4, 2.25, dist ) ) * ( 0.35 + 0.65 * ndl );
         vec2 horiz = toFrag.xz / max( 0.28, -toFrag.y + 0.35 );
         float barX = smoothstep( 0.08, 0.22, abs( fract( horiz.x * 2.35 + 0.5 ) - 0.5 ) );
         float barZ = smoothstep( 0.08, 0.22, abs( fract( horiz.y * 2.35 + 0.5 ) - 0.5 ) );
         float postShadow = smoothstep( 0.14, 0.32, length( toFrag.xz ) );
-        float latticePattern = mix( 0.32, 1.18, barX * barZ ) * postShadow;
-        totalGlow += vec3( 1.0, 0.66, 0.24 ) * atten * latticePattern * uLanternIntensity * 0.34;
+        float latticePattern = mix( 0.42, 1.12, barX * barZ ) * postShadow;
+        totalGlow += vec3( 1.0, 0.72, 0.32 ) * atten * latticePattern * uLanternIntensity * 0.15;
       }
     }
     return totalGlow;
