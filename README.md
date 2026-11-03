@@ -1,5 +1,9 @@
 # Fushimi Inari Mountain Shrine — Stylized 3D Diorama (Three.js)
 
+<p align="center">
+  <img src="img/preview.gif" alt="Fushimi Inari Torii diorama preview" width="800">
+</p>
+
 An interactive, real-time 3D miniature diorama of a secluded Japanese Myojin Torii sando (sacred mountain path) nestled deep within a post-rain camphor, sakaki, and maple forest, built with **Three.js** and custom **GLSL WebGL shaders**.
 
 The scene blends **anime-inspired cel-shaded aesthetics (3D-to-2D Toon Shading)** with **physically grounded atmospheric scattering, shallow-water hydrodynamics, 3D particle-ized waterfall cascades, and volumetric lighting**—all self-contained with zero external image or model file dependencies.
