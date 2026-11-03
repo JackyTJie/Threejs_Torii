@@ -205,9 +205,6 @@ export function streamFlowDirection() {
 export const WATER_FLOW_MATERIALS = [];
 export const RIVERBED_CAUSTIC_MATERIALS = [];
 
-/**
- * 阶段二：水底河床与鹅卵石实时斯涅尔折射焦散（绑定 SWE 高度图 uSweTex）
- */
 export function applySubmergedCaustics(material) {
   const sun = sunDirectionVector();
   const sim = getSweSimulator();
@@ -217,7 +214,8 @@ export function applySubmergedCaustics(material) {
     uWaterAbsorbShallow: { value: new THREE.Color(PALETTE.waterShallow) },
     uWaterAbsorbDeep: { value: new THREE.Color(PALETTE.waterDeep) },
     uSweTex: { value: sim.texture },
-    uSweDomain: { value: new THREE.Vector4(SWE_DOMAIN.xMin, SWE_DOMAIN.xMax, SWE_DOMAIN.zMin, SWE_DOMAIN.zMax) },
+    uSweDomainMin: { value: new THREE.Vector2(SWE_DOMAIN.xMin, SWE_DOMAIN.zMin) },
+    uSweDomainMax: { value: new THREE.Vector2(SWE_DOMAIN.xMax, SWE_DOMAIN.zMax) },
     uSweTexel: { value: new THREE.Vector2(1 / SWE_TEX_WIDTH, 1 / SWE_TEX_HEIGHT) }
   });
   composeBeforeCompile(material, (shader) => {
@@ -234,9 +232,6 @@ export function applySubmergedCaustics(material) {
   return material;
 }
 
-/**
- * 阶段二 & 阶段三：二维浅水方程（SWE）顶点位移 + 深度缓冲消光（Depth Fade）+ 岸边与撞石泡沫
- */
 export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength = 1, overlayMode = 0 } = {}) {
   const sim = getSweSimulator();
   const uniforms = bindUniforms(material, {
@@ -249,7 +244,8 @@ export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength
     uFlowStrength: { value: strength },
     uOverlayMode: { value: overlayMode },
     uSweTex: { value: sim.texture },
-    uSweDomain: { value: new THREE.Vector4(SWE_DOMAIN.xMin, SWE_DOMAIN.xMax, SWE_DOMAIN.zMin, SWE_DOMAIN.zMax) },
+    uSweDomainMin: { value: new THREE.Vector2(SWE_DOMAIN.xMin, SWE_DOMAIN.zMin) },
+    uSweDomainMax: { value: new THREE.Vector2(SWE_DOMAIN.xMax, SWE_DOMAIN.zMax) },
     uSweTexel: { value: new THREE.Vector2(1 / SWE_TEX_WIDTH, 1 / SWE_TEX_HEIGHT) },
     uSweDisplaceScale: { value: overlayMode === 0 ? 1.15 : 0.0 },
     tRefractionColor: { value: sim.refractionColorTex },

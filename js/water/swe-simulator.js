@@ -8,7 +8,7 @@
 //     * A 通道 = 流速/动量变化率与湍流涡度能量
 //   - 模拟着色器（SWE_SIM_FS）：基于拉普拉斯算子与顺流平流项求解浅水波动方程；
 //     遇障碍物（B > 0.5）强制反射波能并将法向速度置零，实现水流绕石碰撞、弓形激波与背水尾流；
-//   - 交互输入机制：接收 Raycaster 射线命中点，在纹理上写入瞬时高斯水高增量激起动态交互波纹。
+//   - 交互输入机制：接收射线命中点，在纹理上写入瞬时高斯水高增量激起动态交互波纹。
 //
 // 阶段三：深度图与折射缓冲通道（Depth Buffer & Refraction Pass）
 //   - 在渲染水面之前，先隐藏水面网格，将河床（streamBed）、水中鹅卵石、沉叶与溪石（streamStones）
@@ -49,7 +49,8 @@ export const SWE_SIM_FS = /* glsl */ `
   uniform sampler2D uStateTex;
   uniform sampler2D uObstacleTex;
   uniform vec2 uTexelSize;
-  uniform vec4 uDomain;
+  uniform vec2 uDomainMin;
+  uniform vec2 uDomainMax;
   uniform float uTime;
   uniform float uDamping;
   uniform float uWaveSpeed;
@@ -59,10 +60,7 @@ export const SWE_SIM_FS = /* glsl */ `
   varying vec2 vUv;
 
   vec2 uvToWorld( vec2 uv ) {
-    return vec2(
-      mix( uDomain.x, uDomain.y, uv.x ),
-      mix( uDomain.z, uDomain.w, uv.y )
-    );
+    return mix( uDomainMin, uDomainMax, uv );
   }
 
   void main() {
@@ -116,7 +114,7 @@ export const SWE_SIM_FS = /* glsl */ `
 
     hNext += wakeSource + cascadeWave;
 
-    // Raycast 实时交互波纹注入
+    // 指针射线交互波纹注入
     if ( uImpulse.z > 0.0001 ) {
       float dist = length( worldXZ - uImpulse.xy );
       if ( dist < uImpulseRadius ) {
@@ -219,7 +217,8 @@ export function getSweSimulator() {
   if (sharedSimulator) return sharedSimulator;
 
   const { stateTex, obstacleTex, stateData, obstacleData } = buildSweInitialTextures();
-  const domainVec = new THREE.Vector4(SWE_DOMAIN.xMin, SWE_DOMAIN.xMax, SWE_DOMAIN.zMin, SWE_DOMAIN.zMax);
+  const domainMin = new THREE.Vector2(SWE_DOMAIN.xMin, SWE_DOMAIN.zMin);
+  const domainMax = new THREE.Vector2(SWE_DOMAIN.xMax, SWE_DOMAIN.zMax);
 
   const rtOpts = {
     format: THREE.RGBAFormat,
@@ -254,7 +253,8 @@ export function getSweSimulator() {
     uStateTex: { value: stateTex },
     uObstacleTex: { value: obstacleTex },
     uTexelSize: { value: new THREE.Vector2(1 / SWE_TEX_WIDTH, 1 / SWE_TEX_HEIGHT) },
-    uDomain: { value: domainVec },
+    uDomainMin: { value: domainMin },
+    uDomainMax: { value: domainMax },
     uTime: { value: 0 },
     uDamping: { value: 0.985 },
     uWaveSpeed: { value: 1.65 },
@@ -327,9 +327,6 @@ export function getSweSimulator() {
     return currentTexture;
   }
 
-  /**
-   * 阶段三：渲染河床深度与水下场景折射图（隐藏水面网格后渲染一次河床与溪石）
-   */
   function captureRefraction(renderer, scene, camera) {
     if (!renderer || !scene || !camera) return false;
     const waterRoot = scene.getObjectByName('streamWater');
@@ -364,7 +361,8 @@ export function getSweSimulator() {
       return refractionReady;
     },
     obstacleTex,
-    domain: domainVec,
+    domainMin,
+    domainMax,
     stateData,
     obstacleData,
     addDrop,

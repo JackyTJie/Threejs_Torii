@@ -1,7 +1,7 @@
 // 入口：全工程唯一使用 requestAnimationFrame 的模块。
 //
 // 这里只做四件事：建渲染器 / 场景 / 相机 / 灯光，把资产交给 scene-assembly 组装，
-// 挂载水面 Raycaster 实时物理交互波纹（点击或划过山涧水面激起 SWE 浅水方程扩散与绕石反弹波），
+// 挂载水面屏幕射线实时物理交互波纹（点击或划过山涧水面激起 SWE 浅水方程扩散与绕石反弹波），
 // 然后每帧按固定顺序推进：相机 → 动画 → 后处理（含 SWE GPU Ping-Pong 迭代与深度折射通道）。
 // 画面里没有任何界面元素：不创建 DOM、不写文字、不加控件。
 import * as THREE from 'three';
@@ -14,6 +14,7 @@ import { assembleScene } from './scene-assembly.js';
 import { createPostPipeline } from './post-pipeline.js';
 import { outlinePixelScale, setOutlinePixelScale } from './outline.js';
 import { animationElapsed, stepAnimations } from './animations/registry.js';
+import { streamBankHalf, streamCenterX, waterY } from './layout.js';
 import { getSweSimulator } from './water/swe-simulator.js';
 
 /** 单帧最大步长：切后台 / 断点回来不补算大跳帧 */
@@ -35,21 +36,49 @@ export function createApp(canvas, options = {}) {
   const post = createPostPipeline(renderer, scene, camera);
   const swe = getSweSimulator();
 
-  // 阶段一.3：射线检测（Raycasting）交互输入机制 —— 鼠标划过或点击溪流时在 SWE 高度图写入瞬时水波冲量
-  const raycaster = new THREE.Raycaster();
-  const pointerNdc = new THREE.Vector2();
-  const waterRoot = assembly.assets.get('streamWater');
+  // 阶段一.3：屏幕射线步进（Raycasting）交互输入机制 —— 将指针位置反投影为三维视线并与山涧曲面求交，写入 SWE 高度增量
+  const rayDir = new THREE.Vector3();
+  const camRight = new THREE.Vector3();
+  const camUp = new THREE.Vector3();
+  const camFwd = new THREE.Vector3();
 
   function triggerWaterRipple(clientX, clientY, strength) {
-    if (!waterRoot || !canvas) return;
+    if (!canvas) return;
     const w = canvas.clientWidth || window.innerWidth || 1;
     const h = canvas.clientHeight || window.innerHeight || 1;
-    pointerNdc.set((clientX / w) * 2 - 1, -(clientY / h) * 2 + 1);
-    raycaster.setFromCamera(pointerNdc, camera);
-    const hits = raycaster.intersectObject(waterRoot, true);
-    if (hits.length > 0) {
-      const p = hits[0].point;
-      swe.addDrop(p.x, p.z, strength, 0.45);
+    const ndcX = (clientX / w) * 2 - 1;
+    const ndcY = -(clientY / h) * 2 + 1;
+
+    const e = camera.matrixWorld.elements;
+    camRight.set(e[0], e[1], e[2]).normalize();
+    camUp.set(e[4], e[5], e[6]).normalize();
+    camFwd.set(-e[8], -e[9], -e[10]).normalize();
+
+    const tanHalfFov = Math.tan((camera.fov * Math.PI) / 360);
+    const aspect = w / Math.max(1, h);
+    rayDir
+      .copy(camFwd)
+      .addScaledVector(camRight, ndcX * aspect * tanHalfFov)
+      .addScaledVector(camUp, ndcY * tanHalfFov)
+      .normalize();
+
+    if (rayDir.y >= -0.01) return;
+    const ox = camera.position.x;
+    const oy = camera.position.y;
+    const oz = camera.position.z;
+
+    // 沿视线快速求交山涧水面高度场 y = waterY(z)
+    let t = (1.2 - oy) / rayDir.y;
+    for (let iter = 0; iter < 5; iter++) {
+      const hz = oz + rayDir.z * t;
+      const wy = waterY(hz);
+      t = (wy - oy) / rayDir.y;
+    }
+    if (t <= 0 || t > 45) return;
+    const hx = ox + rayDir.x * t;
+    const hz = oz + rayDir.z * t;
+    if (Math.abs(hx - streamCenterX(hz)) <= streamBankHalf(hz) + 0.35) {
+      swe.addDrop(hx, hz, strength, 0.45);
     }
   }
 
