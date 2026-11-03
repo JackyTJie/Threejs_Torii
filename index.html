@@ -1,11 +1,36 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="color-scheme" content="dark" />
-  <title>雨后深林 · 神社鸟居参道</title>
+  <meta name="color-scheme" content="light dark" />
+  <title>Inari Shrine · Mountain Torii Diorama</title>
   <style>
+    :root {
+      --loader-bg: #080b09;
+      --loader-accent: #7ed498;
+      --loader-track: rgba(126, 212, 152, 0.18);
+      --loader-glow: rgba(126, 212, 152, 0.26);
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --loader-bg: #ffffff;
+        --loader-accent: #5ebd7c;
+        --loader-track: rgba(94, 189, 124, 0.20);
+        --loader-glow: rgba(94, 189, 124, 0.22);
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --loader-bg: #080b09;
+        --loader-accent: #7ed498;
+        --loader-track: rgba(126, 212, 152, 0.18);
+        --loader-glow: rgba(126, 212, 152, 0.26);
+      }
+    }
+
     html,
     body {
       margin: 0;
@@ -13,7 +38,7 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #111513;
+      background: var(--loader-bg);
     }
 
     #stage {
@@ -27,6 +52,23 @@
     #stage:active {
       cursor: grabbing;
     }
+
+    #torii-loader {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--loader-bg);
+      transition: opacity 0.55s cubic-bezier(0.22, 1, 0.36, 1), visibility 0.55s ease;
+    }
+
+    #torii-loader.is-done {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
   </style>
   <script type="importmap">
     {
@@ -38,6 +80,7 @@
   </script>
 </head>
 <body>
+  <div id="torii-loader"></div>
   <canvas id="stage"></canvas>
   <script type="module" src="./js/main.js"></script>
 </body>

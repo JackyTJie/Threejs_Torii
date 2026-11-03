@@ -1,82 +1,85 @@
 # Fushimi Inari Mountain Shrine — Stylized 3D Diorama (Three.js)
 
-An interactive, real-time 3D miniature diorama of a secluded Japanese Myōjin Torii sando (sacred mountain path) nestled deep within a post-rain cedar and maple forest, built with **Three.js** and custom **GLSL WebGL shaders**.
+An interactive, real-time 3D miniature diorama of a secluded Japanese Myojin Torii sando (sacred mountain path) nestled deep within a post-rain camphor, sakaki, and maple forest, built with **Three.js** and custom **GLSL WebGL shaders**.
 
-The scene blends **anime-inspired cel-shaded aesthetics (3D-to-2D Toon Shading)** with **physically grounded atmospheric scattering, shallow-water hydrodynamics, and volumetric lighting**—all self-contained with zero external image or model dependencies.
+The scene blends **anime-inspired cel-shaded aesthetics (3D-to-2D Toon Shading)** with **physically grounded atmospheric scattering, shallow-water hydrodynamics, 3D particle-ized waterfall cascades, and volumetric lighting**—all self-contained with zero external image or model file dependencies.
 
 ## Key Features
 
-### 1. Procedural Rayleigh & Mie Atmospheric Sky & 5-Layer Parallax Mountains
-- **Full 24-Hour Rayleigh/Mie Scattering Sky Shader**: Real-time physical sky evaluation supporting seamless transitions across **Deep Night** (indigo cosmos with rotating starfield and Milky Way band), **Blue Hour** (cobalt zenith with violet-pink and amber horizon glow), **Sunrise / Golden Sunset** (low-angle golden-orange-red solar disc fading through rose-magenta into cobalt blue), **Noon** (bright cyan-cerulean sky above a cool shaded forest), and **Moonlight Night** (silver-blue lunar illumination with phase modulation).
-- **Dual-Layer Procedural Volumetric Clouds**: High-altitude wispy cirrus and low-altitude stratocumulus clouds with temporal drift, time-of-day coverage variation, and sunlit/moonlit silver-gold rim scattering.
-- **5-Layer Atmospheric Perspective Mountains with Parallax**: Five procedural mountain ridges between the sky dome and mid-ground forest following atmospheric perspective laws (progressive desaturation, luminance lift, and horizon blending), camera-driven parallax scrolling, and microscopic warm-red lantern/Torii light points nestled in distant valleys evoking the thousand Torii gates (*Senbon Torii*) of Mount Inari.
+### 1. Adaptive Minimalist Torii Loading Screen
+- **Bottom-Origin Circular Progress Ring**: Features a minimalist line-art Myojin Torii gate centered inside a light-green (`#7ed498` / `#5ebd7c`) circular progress bar that begins at the bottom of the circle (6 o'clock position) and wraps a full 360 degrees back to the bottom as shaders compile and the water solver warms up, smoothly fading out into the 3D scene.
+- **System & Browser Theme Matching**: Automatically adapts its background to pure white (`#ffffff`) in light mode or deep black (`#080b09`) in dark mode via `@media (prefers-color-scheme: light | dark)`.
 
-### 2. Volumetric Lighting, God Rays, GI Color Bounce & Shrine Lanterns
+### 2. Procedural Rayleigh & Mie Atmospheric Sky & 8-Layer Mountain Silhouettes
+- **Full 24-Hour Rayleigh/Mie Scattering Sky Shader**: Real-time physical sky evaluation supporting seamless transitions across **Midnight** (deep black-blue cosmos with rotating starfield and Milky Way band), **Blue Hour** (cobalt zenith with violet-pink and amber horizon glow), **Dawn / Dusk** (low-angle golden-orange-red solar disc fading through rose-magenta into cobalt blue), **Fresh Post-Rain**, **Noon** (bright cerulean sky above a cool shaded forest), and **Moonlight** (silver-blue lunar illumination with phase modulation).
+- **Dual-Layer Procedural Volumetric Clouds**: High-altitude wispy cirrus and low-altitude stratocumulus clouds with temporal drift, time-of-day coverage variation, and sunlit/moonlit rim scattering.
+- **8-Layer Atmospheric Perspective Mountains & Midnight Black Silhouettes**: Eight procedural mountain ridges between the sky dome and dense forest canopy with camera-driven parallax, valley mist ribbons, crisp black mountain silhouettes against the midnight sky, and microscopic warm-red lantern/Torii light points nestled in distant valleys evoking the thousand Torii gates (*Senbon Torii*) of Mount Inari.
+
+### 3. Volumetric Lighting, God Rays, GI Color Bounce & Shrine Lanterns
 - **Celestial Master Light System**: Synchronized solar and lunar trajectories driving directional light angles, color temperatures, shadow softness, and sky-sampled hemisphere fill light.
-- **Forest Volumetric God Rays & Floating Dust Motes**: Screen-space radial volumetric light shafts combined with 3D noise fog scattering, complete with sunlit floating dust motes and a golden sunset "light tunnel" piercing through the Torii crossbeams.
+- **Forest Volumetric God Rays & Floating Dust Motes**: Screen-space radial volumetric light shafts combined with 3D noise fog scattering, complete with sunlit floating dust motes and a golden sunset light tunnel piercing through the Torii crossbeams.
 - **3D Noise-Driven Volumetric Fog**: Altitude-layered 3D FBM volumetric mist that pools thickly along the lower stone steps and stream valley, drifts along the sando, parts naturally around Torii pillars and tree trunks, and scatters warm spherical halos around the shrine lanterns.
-- **Global Illumination (GI) Color Bounce & Lattice Gobo Projection**: Subtle vermilion bounce light from the Torii onto adjacent stone steps and lower tree trunks, cool green canopy shadow tinting, and symmetrical **Kasuga-style vermilion wooden shrine lanterns** (`木造朱塗灯籠`) that automatically ignite at dusk and project **3×3 lattice light patterns** onto the wet stone steps.
+- **Global Illumination (GI) Color Bounce & Lattice Gobo Projection**: Subtle vermilion bounce light from the Torii onto adjacent stone steps and lower tree trunks, cool green canopy shadow tinting, and symmetrical **Kasuga-style vermilion wooden shrine lanterns** that automatically ignite at dusk and project **3x3 lattice light patterns** onto the wet stone steps.
 
-### 3. Zoned Mountain Stream Hydrodynamics (2D Shallow Water Equations + Multi-Regime Wave Solver)
-- **Ping-Pong GPGPU Shallow Water Equations (SWE)**: Real-time height and velocity field PDE simulation (`js/water/swe-simulator.js`) with interactive pointer raycast ripples, screen-space riverbed refraction, Snell's window caustics, and planar reflection of the forest canopy and vermilion Torii.
-- **Six Hydrodynamic Regimes**:
-  1. **Calm Pools**: Mirror-clear central pools revealing submerged sand, gravel bars, and stratified boulders.
-  2. **Rapid Chutes**: Bernoulli-accelerated riffles where the channel narrows.
-  3. **Bank & Rock Shimmering Wavelets**: High-frequency capillary wavelets and sunlit specular sparkles concentrated along the stream banks and around boulders.
-  4. **Upstream Bow-Wave Cushions**: Dynamic water pillows and whitewater splash on the upstream faces of boulders.
-  5. **Lateral 8-Shaped Split-Flow**: Potential-flow doublet bifurcation wakes around stones.
-  6. **Waterfall Plunge Pools & Kármán Vortex Streets**: Six multi-tiered stone weir cascades with feathered water curtains, hydraulic jump foam, and downstream alternating vortices where fallen maple leaves orbit and drift.
+### 4. Particle-ized Mountain Stream & 2D Shallow Water Equations (SWE)
+- **Ping-Pong GPGPU Shallow Water Equations (SWE)**: Real-time height and velocity field PDE simulation (`js/water/swe-simulator.js`) with interactive pointer raycast ripples, screen-space riverbed refraction, Snell's window caustics, and planar + raytraced reflection of the forest canopy and vermilion Torii.
+- **2,160 Dynamic 3D Water & Foam Particles**:
+  1. **Waterfall Curtain Jet Particles (`720` instances)**: Multi-strand parabolic falling water threads and droplets plunging over all 6 tiered rock weirs.
+  2. **Plunge-Pool Churning Foam & Airborne Splash Particles (`900` instances)**: Bubbling whitewater clusters and leaping micro-droplets at waterfall plunge pools and upstream boulder faces.
+  3. **Rapid Chute Streamline Beads (`540` instances)**: High-velocity water-bead chains racing through narrow S-curve rock chutes and deflecting around mid-stream boulders.
+- **Crystal-Clear Pools & Multi-Directional Wave Sparkles**: Calm pools remain transparent to reveal submerged riverbed pebbles, sandbars, and fallen leaves, while 5 non-collinear wave trains create diamond-shaped specular sparkles near banks and boulders without artificial parallel stripes.
 
-### 4. Four-Layer Composite Century-Worn Stone Steps & Granular Soil-Backed Moss
+### 5. Century-Worn 4-Layer Stone Steps & Sheet-Like Micro-Granular Moss
 - **4-Layer Composite Stone Steps**:
-  1. **Base Layer**: Natural blue-grey slate and andesite with geological fissures and color variation.
+  1. **Base Layer**: Natural blue-grey slate and andesite with geological fissures and per-slab color variation.
   2. **Century-Worn Center Tread**: Smooth, higher-reflectivity polished center zone worn by generations of visitors' footsteps.
-  3. **Crevice Soil & Granular Moss**: Organic soil accumulation and matte, micro-speckled dark-green moss cushions over a grey-brown earth substrate—thickest on shaded risers and the stream-facing (-X) side.
-  4. **Rainwater Puddles & Natural Scatter**: Recessed step puddles reflecting the sky and Torii with concentric ripples, accompanied by scattered fallen leaves, 3D pinecones, and weathered stone spalls.
+  3. **Sheet-Like Micro-Granular Moss**: Coherent, irregular moss sheets formed by thousands of dense dark-green micro-dots (`85%+` internal coverage) atop a matte grey-brown humus soil substrate—following a strict spatial distribution that is thickest along the left stream bank, rich along the right roadside edge, and sparse along the center footpath.
+  4. **Rainwater Puddles & Natural Scatter**: Recessed step puddles reflecting the sky and Torii with multi-directional ripples, accompanied by scattered fallen leaves, 3D pinecones, and weathered stone spalls.
 
-### 5. Interactive Weather System (Easter Egg) & Cyan-Green Glassmorphic Control Panel
+### 6. Bilingual (EN / ZH) Studio Control Panel & Weather System
+- **Bilingual Switch (`EN` / `中文`, Default English)**: Top-right toggle button switches all labels between concise, single-line English terms (`Fresh`, `Night`, `Blue`, `Dawn`, `Noon`, `Dusk`, `Moon`, `Clear`, `Rain`, `Mist`, `Time`, `Sunbeam`, `Lantern`, `Fog`, `Drift`, `SSAO`, `Focus`, `Bloom`, `Wind`) and Chinese, with strict `white-space: nowrap` tabular alignment.
 - **Three Switchable Weather Modes**:
-  - **Post-Rain Clear (`雨后初霁`)**: Crisp forest air, dappled sunbeams, and gentle valley mist.
-  - **Rain (`细雨霏霏`)**: Falling rain streaks, ground splash ripple rings, global wet-surface darkening and specular boost, and thickened mountain mist.
-  - **Heavy Fog (`深山浓雾`)**: Low-visibility deep mountain fog where only the nearby Torii and warm glowing lanterns emerge from the mist.
+  - **Clear**: Crisp post-rain forest air, dappled sunbeams, and gentle valley mist.
+  - **Rain**: Falling rain streaks, ground splash ripple rings, global wet-surface darkening and specular boost, and thickened mountain mist.
+  - **Mist**: Low-visibility deep mountain fog where only the nearby Torii and warm glowing lanterns emerge from the mist.
 
 ## Project Architecture
 
-The codebase strictly follows a modular ES Module architecture where `index.html` serves solely as the entry canvas host and every asset, shader, animation, and post-processing stage resides in its own dedicated module:
+The codebase strictly follows a modular ES Module architecture where `index.html` serves solely as the entry host and every asset, shader, animation, and post-processing stage resides in its own dedicated module:
 
 ```text
 Jp_Torii/
-├── index.html                  # Minimal entry point (ImportMap + <canvas id="stage">)
+├── index.html                  # Minimal entry point (ImportMap + #torii-loader + <canvas id="stage">)
 ├── js/
-│   ├── main.js                 # Application bootstrap, rAF loop, pointer raycast ripples
+│   ├── main.js                 # Application bootstrap, loader warmup, rAF loop, pointer raycast ripples
 │   ├── config.js               # Palette, camera bounds, lighting, post-processing constants
-│   ├── layout.js               # Parametric terrain heightfield, curved sando, stream spline
+│   ├── layout.js               # Parametric terrain heightfield, curved sando, stream spline & forest layout
 │   ├── scene.js                # Scene container, procedural sky dome & PMREM environment
 │   ├── camera.js               # Bounded third-person orbit/zoom rig with anti-clipping lock
 │   ├── lighting.js             # Sun/Moon directional key, hemisphere fill, rim & lantern lights
 │   ├── day-night.js            # 24-hour celestial interpolation & atmospheric state machine
-│   ├── weather.js              # Switchable weather system (Post-Rain / Rainy / Heavy Fog)
+│   ├── weather.js              # Switchable weather system (Clear / Rain / Mist)
 │   ├── materials.js            # Toon & physical material library with custom shader hooks
 │   ├── textures.js             # 100% procedural CanvasTexture / DataTexture generators
-│   ├── toon.js                 # Shader injection (4-layer steps, granular moss, GI bounce, Torii aging)
+│   ├── toon.js                 # Shader injection (4-layer steps, sheet moss, GI bounce, Torii aging)
 │   ├── outline.js              # Distance-adaptive inverted-hull cel outlines
 │   ├── post-pipeline.js        # Offscreen pipeline (SWE, Sky/Mountains, SSAO, 3D Volumetric Fog, God Rays, DOF, Bloom, Grade)
-│   ├── ui-panel.js             # Collapsible cyan-green glassmorphic atmosphere & weather control panel
+│   ├── ui-panel.js             # Minimalist Torii circular loader & bilingual (EN/ZH) control panel
 │   ├── primitives.js           # Procedural geometry builders (sweeps, rocks, leaves, triplanar UVs)
-│   ├── tree-kit.js             # 360° Golden-Angle branching & instanced foliage canopies
+│   ├── tree-kit.js             # 360-degree Golden-Angle branching & instanced foliage canopies
 │   ├── scene-assembly.js       # Master scene graph assembly & animation binding
 │   ├── water/
 │   │   └── swe-simulator.js    # WebGL 2D Shallow Water Equations Ping-Pong FBO solver
 │   ├── shaders/
-│   │   ├── toon-shading.js     # GLSL chunks for cel shading, 4-layer steps, moss, GI & Torii aging
-│   │   ├── water-shader.js     # GLSL chunks for zoned stream waves, bank/rock shimmer & caustics
-│   │   ├── ssao-shader.js      # GLSL Rayleigh sky, 5-layer mountains, SSAO, 3D volumetric fog & God Rays
+│   │   ├── toon-shading.js     # GLSL chunks for cel shading, 4-layer steps, micro-dot moss, GI & Torii aging
+│   │   ├── water-shader.js     # GLSL chunks for zoned stream waves, cellular foam & caustics
+│   │   ├── ssao-shader.js      # GLSL Rayleigh sky, 8-layer mountains, SSAO, 3D volumetric fog & God Rays
 │   │   ├── outline-shader.js   # GLSL inverted-hull & depth-edge outline shaders
 │   │   ├── dof-shader.js       # GLSL separable Circle-of-Confusion Depth of Field
 │   │   ├── bloom-shader.js     # GLSL dual-pass soft bloom
 │   │   └── grade-shader.js     # GLSL ACES Filmic tone mapping & color grading
 │   ├── assets/                 # 22 independent 3D asset modules (Torii, lanterns, stone steps, stream, trees, ferns, moss, etc.)
-│   └── animations/             # Modular animation controllers (stream flow, tree sway, puddles, mist, sun flicker)
+│   └── animations/             # Modular animation controllers (stream flow & 3D particles, tree sway, puddles, mist, sun flicker)
 └── tools/                      # Offline validation, smoke test, geometry audit & software rasterizer preview tools
 ```
 
@@ -97,7 +100,7 @@ Then open `http://localhost:8080` in any modern WebGL2-capable browser:
 - **Orbit Camera**: Left-click + drag (bounded within the scenic viewing corridor).
 - **Zoom**: Scroll wheel / trackpad pinch (smoothly coupled with focal target).
 - **Interactive Stream Ripples**: Move or click the cursor over the mountain stream to disturb the 2D Shallow Water Equations solver in real time.
-- **Atmosphere, Time-of-Day & Weather Panel**: Click the cyan-green orb button in the bottom-right corner to switch time presets (`深夜 / 蓝调 / 清晨 / 雨后 / 正午 / 黄昏 / 月夜`), toggle the 24h auto-cycle, switch weather modes (`雨后初霁 / 细雨霏霏 / 深山浓雾`), or fine-tune lantern brightness, volumetric fog, God Rays, SSAO, DOF, and wind sway.
+- **Bilingual Atmosphere & Weather Control Panel**: Click the cyan-green orb button in the bottom-right corner to open the control panel (defaults to concise English; click `中文` / `EN` in the top-right header to switch languages), select time presets (`Fresh / Night / Blue / Dawn / Noon / Dusk / Moon`), toggle 24h auto-cycle (`Auto: ON/OFF`), switch weather modes (`Clear / Rain / Mist`), or fine-tune `Time`, `Sunbeam`, `Lantern`, `Fog`, `Drift`, `SSAO`, `Focus`, `Bloom`, and `Wind`.
 
 ### 2. Run Validation & Offline Audit Suite
 ```bash

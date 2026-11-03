@@ -1,8 +1,9 @@
 // 入口：全工程唯一使用 requestAnimationFrame 的模块。
 //
-// 这里负责：建渲染器 / 场景 / 相机 / 灯光，把资产交给 scene-assembly 组装，
-// 挂载水面屏幕射线实时物理交互波纹、全天时瑞利大气昼夜系统、可切换气象系统彩蛋与右下角青绿色圆球形控制面板，
-// 然后每帧按固定顺序推进：相机 → 昼夜与气象系统 → 动态效果 → 后处理（含 SWE GPU Ping-Pong、瑞利天空与5层远山、SSAO、3D体积雾、丁达尔体积光、鸟居景深 DOF 与辉光）。
+// 这里负责：挂载极简鸟居圆形进度加载界面（createLoadingScreen），
+// 建渲染器 / 场景 / 相机 / 灯光，把资产交给 scene-assembly 组装，
+// 挂载水面屏幕射线实时物理交互波纹、全天时瑞利大气昼夜系统、可切换气象系统彩蛋与右下角青绿色中英双语控制面板，
+// 然后每帧按固定顺序推进：相机 → 昼夜与气象系统 → 动态效果 → 后处理（含 SWE GPU Ping-Pong、瑞利天空与8层远山、SSAO、3D体积雾、丁达尔体积光、鸟居景深 DOF 与辉光）。
 import * as THREE from 'three';
 import { createRenderer, resizeRenderer, drawingBufferSize } from './renderer.js';
 import { createScene } from './scene.js';
@@ -17,7 +18,7 @@ import { streamBankHalf, streamCenterX, waterY } from './layout.js';
 import { getSweSimulator } from './water/swe-simulator.js';
 import { createDayNightSystem } from './day-night.js';
 import { createWeatherSystem } from './weather.js';
-import { createSettingsPanel } from './ui-panel.js';
+import { createLoadingScreen, createSettingsPanel } from './ui-panel.js';
 
 /** 单帧最大步长：切后台 / 断点回来不补算大跳帧 */
 const MAX_FRAME_DELTA = 1 / 20;
@@ -25,16 +26,25 @@ const MAX_FRAME_DELTA = 1 / 20;
 /**
  * 建立整个应用。与浏览器解耦：canvas 由调用方给，方便离线复现同一帧构图。
  * @param {HTMLCanvasElement} canvas
- * @param {{animations?:boolean, ui?:boolean}} options
+ * @param {{animations?:boolean, ui?:boolean, onProgress?:(p:number)=>void}} options
  */
 export function createApp(canvas, options = {}) {
+  const report = typeof options.onProgress === 'function' ? options.onProgress : null;
+  if (report) report(0.12);
+
   const renderer = createRenderer(canvas);
   const scene = createScene({ renderer });
   const rig = createCameraRig(canvas);
   const camera = rig.camera;
   const lighting = createLighting(scene);
+  if (report) report(0.26);
+
   const materials = createMaterialLibrary();
+  if (report) report(0.46);
+
   const assembly = assembleScene(scene, materials, { animations: options.animations !== false });
+  if (report) report(0.74);
+
   const post = createPostPipeline(renderer, scene, camera);
   const swe = getSweSimulator();
   const dayNight = createDayNightSystem({ scene, lighting, post });
@@ -46,6 +56,7 @@ export function createApp(canvas, options = {}) {
     weather,
     animations: assembly.animations
   });
+  if (report) report(0.88);
 
   // 屏幕射线步进（Raycasting）交互输入机制 —— 将指针位置反投影为三维视线并与山涧曲面求交，写入 SWE 高度增量
   const rayDir = new THREE.Vector3();
@@ -105,6 +116,7 @@ export function createApp(canvas, options = {}) {
   let lastTime = 0;
   let running = false;
   let frames = 0;
+  const frameListeners = new Set();
 
   function syncOutlinePixelScale() {
     const { height } = drawingBufferSize(renderer);
@@ -139,9 +151,12 @@ export function createApp(canvas, options = {}) {
     if (stepped.errors.length) console.error('[animations]', stepped.errors.join(' | '));
     weather.step(seconds, animationElapsed());
 
-    // 3) 后处理：SWE 物理迭代 → 河床深度折射通道 → 瑞利天空/5层远山/SSAO/3D体积雾/丁达尔体积光 → 描边 → 景深 DOF → 辉光 → 合成 → 调色
+    // 3) 后处理：SWE 物理迭代 → 河床深度折射通道 → 瑞利天空/8层远山/SSAO/3D体积雾/丁达尔体积光 → 描边 → 景深 DOF → 辉光 → 合成 → 调色
     post.render(animationElapsed());
     frames += 1;
+    if (frameListeners.size) {
+      for (const fn of frameListeners) fn(frames);
+    }
   }
 
   function start() {
@@ -164,6 +179,7 @@ export function createApp(canvas, options = {}) {
     window.removeEventListener('resize', onResize);
     canvas.removeEventListener('pointermove', onWaterPointerMove);
     canvas.removeEventListener('pointerdown', onWaterPointerDown);
+    frameListeners.clear();
     if (ui) ui.dispose();
     rig.dispose();
     post.dispose();
@@ -196,6 +212,10 @@ export function createApp(canvas, options = {}) {
     dispose,
     resize: onResize,
     step,
+    onFrame(fn) {
+      frameListeners.add(fn);
+      return () => frameListeners.delete(fn);
+    },
     setView({ azimuthDeg, elevationDeg, radius }) {
       rig.setView({ azimuthDeg, elevationDeg, radius });
       rig.update(1);
@@ -204,11 +224,25 @@ export function createApp(canvas, options = {}) {
   return app;
 }
 
-/** 浏览器入口：index.html 只提供 <canvas id="stage"> */
+/** 浏览器入口：启动极简鸟居圆形加载进度条，待着色器编译与水体预热完成后平滑淡出进入场景 */
 function boot() {
   const canvas = document.getElementById('stage');
   if (!canvas) return null;
-  const app = createApp(canvas);
+  const loader = createLoadingScreen();
+  const app = createApp(canvas, {
+    onProgress: (p) => loader.setProgress(p)
+  });
+
+  const WARMUP_FRAMES = 18;
+  const offFrame = app.onFrame((f) => {
+    const ratio = Math.min(1, f / WARMUP_FRAMES);
+    loader.setProgress(0.15 + 0.85 * ratio);
+    if (f >= WARMUP_FRAMES) {
+      offFrame();
+      loader.finish();
+    }
+  });
+
   app.start();
   return app;
 }
