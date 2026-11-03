@@ -1,6 +1,8 @@
-// 灯光：雨后阴天漫射主光 Key + 半球 Fill + 冷色 Rim + 弱环境光
+// 灯光：雨后阴天漫射主光 Key + 半球 Fill + 冷色 Rim + 弱环境光 + 参道对称春日木灯笼暖黄微光点光源
 import * as THREE from 'three';
 import { LIGHT, PAD } from './config.js';
+import { getShrineLanternWorldPositions } from './assets/torii.js';
+import { LANTERN_GLOW_MATERIALS } from './materials.js';
 
 const DEG = Math.PI / 180;
 
@@ -21,16 +23,6 @@ export function sunDirection() {
   return lightDirection(LIGHT.sunAzimuthDeg, LIGHT.sunElevationDeg);
 }
 
-/**
- * 平行光阴影正交视锥：把「底座正方形 × 场景高度」这个盒子投影到光空间的
- * 右手轴 / 上手轴上，直接反算 left / right / top / bottom 与 near / far。
- *
- * 为什么不能给一个固定边长：正方形绕水平光行方向旋转后，
- * 在光空间横轴上的投影半宽 = half · (|r.x| + |r.z|)，本场景 16 × (0.4226 + 0.9063) = 21.26，
- * 写死一个略小的常数 → 底座四角（以及四角上的树）落在阴影贴图外，树影在角上凭空消失。
- * 上下方向还额外吃场景高度（实测最高树冠 18.14 m，见 config.shadowSceneTop）与底座厚度，
- * 因此 top / bottom 天然不对称：top = 13.09 + 0.788·yMax + margin，bottom = −13.09 − 1.261 + margin。
- */
 export function shadowFrustum(direction, options = {}) {
   const {
     halfSpan = PAD.half,
@@ -42,7 +34,6 @@ export function shadowFrustum(direction, options = {}) {
   } = options;
 
   const d = direction.clone().normalize();
-  // 光空间横轴取水平方向（阴影里的竖直信息全部落在 up 轴上，横轴不含 y）
   const right = new THREE.Vector3(-d.z, 0, d.x).normalize();
   const up = new THREE.Vector3().crossVectors(right, d).normalize();
 
@@ -51,7 +42,6 @@ export function shadowFrustum(direction, options = {}) {
   const top = upHorizontal + Math.max(0, up.y) * yMax + Math.min(0, up.y) * yMin;
   const bottom = -upHorizontal + Math.min(0, up.y) * yMax + Math.max(0, up.y) * yMin;
 
-  // 沿光行方向的深度范围（相机位于 target - d·distance）
   const horizontal = halfSpan * (Math.abs(d.x) + Math.abs(d.z));
   const depthMax = horizontal + (d.y > 0 ? d.y * yMax : d.y * yMin) - d.y * targetY;
   const depthMin = -horizontal + (d.y > 0 ? d.y * yMin : d.y * yMax) - d.y * targetY;
@@ -70,14 +60,14 @@ export function shadowFrustum(direction, options = {}) {
 }
 
 /**
- * 建立全部灯光。
+ * 建立全部灯光（含鸟居前左右对称春日木灯笼的暖黄微光点光源）。
  * @param {THREE.Scene} scene
  */
 export function createLighting(scene) {
   const group = new THREE.Group();
   group.name = 'lighting';
 
-  // Key：雨后阴天漫射主光（方位 155°，仰角 38°，见 config.LIGHT）
+  // Key：雨后阴天漫射主光
   const key = new THREE.DirectionalLight(LIGHT.sunColor, LIGHT.sunIntensity);
   key.name = 'sunKey';
   const dir = sunDirection();
@@ -90,7 +80,7 @@ export function createLighting(scene) {
   key.shadow.radius = LIGHT.shadowRadius;
   group.add(key, key.target);
 
-  // Fill：天空 / 地面半球补光，漫射感
+  // Fill：天空 / 地面半球补光
   const fill = new THREE.HemisphereLight(LIGHT.hemiSky, LIGHT.hemiGround, LIGHT.hemiIntensity);
   fill.name = 'skyFill';
   fill.position.set(0, 18, 0);
@@ -107,6 +97,28 @@ export function createLighting(scene) {
   ambient.name = 'baseAmbient';
   group.add(ambient);
 
+  // 参道鸟居前左右对称春日木灯笼的暖黄微光点光源
+  const lanternLights = [];
+  let lanternBrightness = 0.42;
+  for (const pos of getShrineLanternWorldPositions()) {
+    const pt = new THREE.PointLight(0xffad42, lanternBrightness * 1.45, 5.2, 1.6);
+    pt.name = `lanternLight-${pos.side}`;
+    pt.position.set(pos.x, pos.y, pos.z);
+    pt.castShadow = false;
+    group.add(pt);
+    lanternLights.push(pt);
+  }
+
+  function setLanternBrightness(v) {
+    lanternBrightness = Math.max(0, Math.min(2.5, Number(v) || 0));
+    for (const pt of lanternLights) {
+      pt.intensity = lanternBrightness * 1.55;
+    }
+    for (const mat of LANTERN_GLOW_MATERIALS) {
+      mat.emissiveIntensity = 0.08 + lanternBrightness * 0.85;
+    }
+  }
+
   scene.add(group);
 
   return {
@@ -115,19 +127,22 @@ export function createLighting(scene) {
     fill,
     rim,
     ambient,
+    lanternLights,
     sunDirection: dir.clone(),
-    /** 重新贴合阴影视锥（改太阳角度或场景高度后调用） */
     fitShadow() {
       fitShadowCamera(key, sunDirection());
       return shadowFrustum(sunDirection());
     },
     setSunIntensity(v) {
       key.intensity = v;
-    }
+    },
+    getLanternBrightness() {
+      return lanternBrightness;
+    },
+    setLanternBrightness
   };
 }
 
-/** 让平行光从指定方向照向场景中心（覆盖全底座） */
 function placeDirectional(light, direction, distance) {
   light.target.position.set(0, SHADOW_TARGET_Y, 0);
   light.position.set(
@@ -138,7 +153,6 @@ function placeDirectional(light, direction, distance) {
   light.target.updateMatrixWorld();
 }
 
-/** 阴影相机原点与 shadowFrustum 的假设必须一致：target = (0, SHADOW_TARGET_Y, 0) */
 const SHADOW_TARGET_Y = 0.4;
 
 function fitShadowCamera(light, direction) {
@@ -153,7 +167,6 @@ function fitShadowCamera(light, direction) {
   return f;
 }
 
-/** 阴影相机覆盖范围复核（Step 6 校验：阴影不应超出底座太多导致精度浪费） */
 export function shadowCoverage(light) {
   const cam = light.shadow.camera;
   return {

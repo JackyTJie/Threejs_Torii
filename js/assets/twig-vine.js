@@ -1,11 +1,9 @@
 /**
  * 细树干与藤蔓（layout.TWIGS → asset-map.twig）
  *
- * 包含三部分独立建模的林间细节构件：
- * 1) 14 处坡地与溪岸倒伏细干 / 枯枝（按 layout.TWIGS 落点）；
- * 2) 乔木主干攀援藤蔓（依附于参道两侧与鸟居后方高大树干）；
- * 3) 鸟居正上方林间横跨的悬垂细藤索（还原参考图 ref/20261102-170814.jpg 中
- *    鸟居笠木上方高大树干之间优雅横跨的 3 条弧形林间细藤/注连索细节）。
+ * 包含两部分独立建模的林间细节构件：
+ * 1) 14 处坡地与溪岸倒伏细干 / 枯枝（按 layout.TWIGS 落点，分叉朝向随机错落）；
+ * 2) 乔木主干螺旋攀援藤蔓（依附于参道两侧与鸟居后方高大树干）。
  */
 import * as THREE from 'three';
 import {
@@ -25,7 +23,6 @@ import {
   mesh,
   rng,
   rockGeometry,
-  saggingCable,
   triplanarUv,
   tubeFromPoints
 } from '../primitives.js';
@@ -170,7 +167,7 @@ function buildFallenTwig(index, spec, M, leafGeos, rand) {
 
   for (let f = 0; f < 2; f++) {
     const anchor = pts[f + 1].clone();
-    const forkAz = az + (f === 0 ? 1 : -1) * (0.55 + rand() * 0.45);
+    const forkAz = az + (f === 0 ? 1 : -1) * (0.65 + rand() * 0.55);
     const forkLen = lerp(FORK_LEN[0], FORK_LEN[1], rand());
     const midPt = new THREE.Vector3(
       anchor.x + Math.cos(forkAz) * forkLen * 0.55,
@@ -247,7 +244,7 @@ function buildFallenTwig(index, spec, M, leafGeos, rand) {
   return { group: g, meshCount };
 }
 
-/** 乔木主干攀援藤蔓 + 鸟居上方横跨细藤索 */
+/** 乔木主干攀援藤蔓 */
 function buildTreeClimbingVines(M, leafGeos, rand) {
   const g = group('twig-tree-vines');
   let meshCount = 0;
@@ -291,30 +288,6 @@ function buildTreeClimbingVines(M, leafGeos, rand) {
       rand
     );
     g.add(leaves);
-    meshCount += 1;
-  });
-
-  // 鸟居上方高处林木间横跨的 3 条悬垂细藤弧线（还原参考图中鸟居笠木上方树干间的弧线细节）
-  const overheadSpans = [
-    { a: [-2.8, 10.6, -4.8], b: [0.25, 9.8, -5.8], sag: 0.65, r: 0.014 },
-    { a: [-2.6, 9.9, -4.5], b: [1.4, 9.4, -5.2], sag: 0.78, r: 0.012 },
-    { a: [-1.45, 11.2, -5.4], b: [2.6, 10.4, -4.6], sag: 0.58, r: 0.013 }
-  ];
-  overheadSpans.forEach((span, idx) => {
-    const cable = saggingCable(
-      `overhead-vine-${idx + 1}`,
-      M.vineStem,
-      new THREE.Vector3(...span.a),
-      new THREE.Vector3(...span.b),
-      span.sag,
-      span.r,
-      20
-    );
-    triplanarUv(cable.geometry, 0.35);
-    cable.castShadow = false;
-    cable.receiveShadow = true;
-    cable.userData.noCast = true;
-    g.add(cable);
     meshCount += 1;
   });
 
@@ -367,7 +340,7 @@ export function createTwigVine(M) {
   root.userData.support = {
     host: {
       x: [clamp(hostX0, -15.9, 15.9), clamp(hostX1, -15.9, 15.9)],
-      y: [hostY0, Math.max(hostY1, 12.0)],
+      y: [hostY0, Math.max(hostY1, 10.5)],
       z: [clamp(hostZ0, -15.9, 15.9), clamp(hostZ1, -15.9, 15.9)]
     }
   };

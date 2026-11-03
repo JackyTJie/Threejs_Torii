@@ -33,14 +33,14 @@ export const PALETTE = {
   padEdge: 0x181a1c,
   padHighlight: 0x2e3235,
 
-  // 木材 · 鸟居朱红漆（画面唯一高饱和焦点，鲜明浓郁朱砂红橙，带雨水冲刷深色竖痕）
-  toriiVermilion: 0xe63b19,
-  toriiVermilionDeep: 0x9e210b,
-  toriiVermilionFade: 0xf25829,
-  toriiLacquerLoss: 0x632512,
+  // 木材 · 鸟居朱红漆（整体偏深暗沉稳：受光处偏暖橙，阴影处偏深红褐，底部剥落发黑露木纹，彻底杜绝亮红塑料感）
+  toriiVermilion: 0xb53218,
+  toriiVermilionDeep: 0x59180c,
+  toriiVermilionFade: 0xd45022,
+  toriiLacquerLoss: 0x1e1510,
   toriiBlack: 0x181b20, // 笠木 / 根巻 / 楔
   toriiBlackFade: 0x252a30,
-  toriiWoodBare: 0x6e472b,
+  toriiWoodBare: 0x523622,
   wood: 0x4a3828,
   woodDark: 0x2e2218,
   woodWeathered: 0x3d2e20,

@@ -135,7 +135,8 @@ export function applyWeathering(material, {
   band = 0.6,
   wearAmount = 0.5,
   dustAmount = 0.22,
-  roughnessVar = 0.16
+  roughnessVar = 0.16,
+  toriiMode = 0.0
 } = {}) {
   const uniforms = bindUniforms(material, {
     uWearColor: { value: new THREE.Color(wear) },
@@ -145,6 +146,7 @@ export function applyWeathering(material, {
     uWearAmount: { value: wearAmount },
     uDustAmount: { value: dustAmount },
     uRoughnessVar: { value: roughnessVar },
+    uToriiMode: { value: toriiMode },
     uSpecSunDir: { value: sunDirectionVector() }
   });
   composeBeforeCompile(material, (shader) => {

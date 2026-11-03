@@ -1,21 +1,24 @@
 /**
- * 朱红明神鸟居（PATH_SYSTEM.toriiFront / toriiRear）
+ * 朱红明神鸟居与参道对称春日木灯笼（PATH_SYSTEM.toriiFront / toriiRear）
  *
- * 两座同规格鸟居由同一个工厂产出：各自独立根 Group、独立 Mesh、独立材质实例。
- * 1:1 对照参考图（ref/20261102-170814.jpg）校准并升级第二优先级细节：
- * - 笠木（kasagi）与眉木（nimaki）：黑漆反り弧形顶梁，两端微翘；
- * - 島木（shimaki）、貫（nuki）、額束（gakuzuka）、柱（post）：全套风化朱红漆（T.lacquer / T.post），
- *   带木纹磨损、微粗糙度不均匀高光与根部/榫缝青苔遮罩；
- * - 貫（下横梁）正面悬挂立体多股扭编日式注连绳（しめ縄 shimenawa）与 5 挂 Z 字折纸垂（紙垂 shide），
- *   纸垂与草穗带独立枢轴 Group（branchSway），随山林微风轻柔低速摆动；
- * - 柱身正面带竖向深色雨水冲刷墨痕与局部斑驳木纹，柱脚配低矮根巻与覆苔台石。
+ * 1:1 对照用户参考图升级：
+ * 1) 移除横梁（貫）处的注连绳与纸垂，保持明神鸟居纯粹利落的建筑骨相（不加中央牌匾）；
+ * 2) 参考第三张图，在横梁（貫）正面两端与侧面、以及立柱侧面添加极简暗金色奉纳铭文笔画细节（奉 / 納 与竖排铭文）；
+ * 3) 三段式真实老化与深暗朱漆质感：
+ *    - 顶部笠木（kasagi）与眉木积灰、覆苔最严重（叠加立体厚青苔垫与风化积尘）；
+ *    - 立柱底部因雨水溅射、泥土接触，漆面剥落发黑并露出深褐竖向木纹；
+ *    - 立柱腰部高度（1.0~1.7m）因常年游客触碰，漆面更光滑温润、色泽稍亮；
+ *    - 整体朱红偏深暗，受光面偏暖橙，背阴面偏深红褐，彻底消除亮红塑料感；
+ * 4) 参考第二张图，在靠近前座鸟居的参道一左一右对称设置一对 1:1 还原的日式朱涂木造春日灯笼（含台石、黑漆根巻、
+ *    奉纳墨迹朱柱、腕木受台、绿格子窗棂、暖黄微光障子纸火袋、白壁与反り黑漆切妻屋顶），夜晚发出暖黄微光且面板可控亮度。
  */
 import * as THREE from 'three';
-import { TORII, toriiBaseY } from '../layout.js';
+import { TORII, terrainHeight, toriiBaseY } from '../layout.js';
 import {
   group,
   mesh,
   rng,
+  rockGeometry,
   taperedCylinder,
   slabGeometry,
   sweepProfileGeometry,
@@ -146,39 +149,48 @@ function rootStone(name, stoneMat, blackMat, px, rand) {
   return g;
 }
 
+/**
+ * 立柱表面细节：
+ * - 底部（u ∈ [0.06, 0.24]）因雨水溅射与泥土接触，漆面大块剥落发黑、露出深色纵向木纹；
+ * - 腰部（u ∈ [0.26, 0.44]）保持光滑完整（由着色器 waistTouch 强化温润微亮光泽）；
+ * - 上部局部风化水痕。
+ */
 function postSurfaceDetails(postMesh, woodBareMat, darkStreakMat, rand) {
   const h = P.post.height;
-  const count = 3;
-  for (let i = 0; i < count; i++) {
-    const u = 0.18 + (i + rand() * 0.55) / count;
-    const yLocal = -h / 2 + u * h;
-    const radius = P.post.rBottom + (P.post.rTop - P.post.rBottom) * u;
-    const width = 0.065 + rand() * 0.06;
-    const tall = 0.16 + rand() * 0.24;
-    const proud = (width / 2) ** 2 / (2 * radius) + 0.004;
-    const geo = new THREE.BoxGeometry(width, tall, 0.01);
+  // 1) 柱底雨水溅射剥落发黑与露木纹斑块（集中在底部 hLocal < 0.85m）
+  const basePeelSpecs = [
+    { u: 0.09, w: 0.085, tall: 0.34, az: Math.PI * 0.48, dark: true },
+    { u: 0.13, w: 0.072, tall: 0.28, az: Math.PI * 0.65, dark: false },
+    { u: 0.11, w: 0.078, tall: 0.32, az: Math.PI * 0.32, dark: false },
+    { u: 0.16, w: 0.064, tall: 0.24, az: Math.PI * 0.82, dark: true },
+    { u: 0.08, w: 0.090, tall: 0.30, az: -Math.PI * 0.45, dark: true }
+  ];
+  basePeelSpecs.forEach((sp, i) => {
+    const yLocal = -h / 2 + sp.u * h;
+    const radius = P.post.rBottom + (P.post.rTop - P.post.rBottom) * sp.u;
+    const proud = (sp.w / 2) ** 2 / (2 * radius) + 0.0035;
+    const geo = new THREE.BoxGeometry(sp.w, sp.tall, 0.009);
     triplanarUv(geo, SMALL_TILE, [0, yLocal, 0]);
-    const m = mesh(geo, woodBareMat, `post-bare-${i}`);
-    const azimuth = rand() * Math.PI * 2;
+    const m = mesh(geo, sp.dark ? darkStreakMat : woodBareMat, `post-base-peel-${i}`);
     m.position.set(
-      Math.cos(azimuth) * (radius + proud),
+      Math.cos(sp.az) * (radius + proud),
       yLocal,
-      Math.sin(azimuth) * (radius + proud)
+      Math.sin(sp.az) * (radius + proud)
     );
-    m.rotation.y = Math.PI / 2 - azimuth;
-    m.rotation.z = (rand() - 0.5) * 0.18;
+    m.rotation.y = Math.PI / 2 - sp.az;
+    m.rotation.z = (rand() - 0.5) * 0.08;
     m.castShadow = false;
     m.receiveShadow = true;
     m.userData.noCast = true;
     m.userData.noOutline = true;
     postMesh.add(m);
-  }
+  });
 
-  // 柱身正面竖向雨水冲刷墨痕细节（还原参考图立柱表面深色纵向水痕）
+  // 2) 柱身上段竖向雨水冲刷墨痕（避开腰部光滑触摸区 u ∈ [0.25, 0.44]）
   const streakSegments = [
-    { u: 0.45, w: 0.022, h: 0.48, dAz: 0.05 },
-    { u: 0.3, w: 0.02, h: 0.36, dAz: -0.07 },
-    { u: 0.56, w: 0.018, h: 0.24, dAz: -0.12 }
+    { u: 0.58, w: 0.022, h: 0.42, dAz: 0.05 },
+    { u: 0.64, w: 0.018, h: 0.32, dAz: -0.08 },
+    { u: 0.14, w: 0.024, h: 0.38, dAz: -0.04 }
   ];
   streakSegments.forEach((seg, idx) => {
     const yLocal = -h / 2 + seg.u * h;
@@ -236,7 +248,6 @@ function nukiWedges(T, mossMat) {
       w.receiveShadow = true;
       g.add(w);
     }
-    // 柱与贯交接榫眼缝隙处的深山潮湿青苔垫
     if (mossMat) {
       const mGeo = new THREE.BoxGeometry(0.46, 0.032, P.nuki.depth + 0.04);
       triplanarUv(mGeo, SMALL_TILE, [px, P.nuki.y1 + 0.015, 0]);
@@ -274,7 +285,7 @@ function post(name, T, px, rand) {
 }
 
 /**
- * 中央額束（gakuzuka）：参考图中島木与貫之间仅有中央一根朱红立束，两侧留白通透
+ * 中央額束（gakuzuka）：参考图中島木与貫之间仅有中央一根朱红立束，不挂牌匾
  */
 function gakuzuka(T) {
   const g = group('gakuzuka');
@@ -287,7 +298,6 @@ function gakuzuka(T) {
   body.receiveShadow = true;
   g.add(body);
 
-  // 上下端木榫箍边
   for (const [tag, yOff] of [['top', P.gakuzuka.y1 - 0.05], ['bot', P.gakuzuka.y0 + 0.05]]) {
     const collarGeo = new THREE.BoxGeometry(P.gakuzuka.width + 0.04, 0.08, P.gakuzuka.depth + 0.03);
     triplanarUv(collarGeo, SMALL_TILE, [0, yOff, 0]);
@@ -301,163 +311,303 @@ function gakuzuka(T) {
 }
 
 /**
- * 单挂日式折纸「紙垂（しで）」：
- * 原点设在注连绳下缘挂点处，由 4 折 Z 字雷纹纸片构成，挂有 branchSway 以随微风轻柔摆动。
+ * 顶部笠木（kasagi）重度积灰与厚青苔层：
+ * 沿反り弧形笠木顶面铺设多簇立体深山厚青苔垫（mossStone / mossWet），体现顶部常年雨淋积灰长苔最严重。
  */
-function buildSingleShide(name, shideMat, x, y, z, scale, rand) {
-  const pivot = group(name);
-  pivot.position.set(x, y, z);
+function buildKasagiHeavyMoss(T, M, rand) {
+  const g = group('kasagi-moss-group');
+  const half = P.kasagi.length / 2 - 0.22;
+  const camber = P.kasagi.camber;
+  const topY = P.kasagi.y1;
+  const mossCount = 11;
 
-  // 4 段 Z 字形阶梯折纸片（稻妻/雷纹造型）
-  const folds = [
-    { dx: 0.0, dy: -0.042, dz: 0.004, w: 0.052, h: 0.088, rz: 0.14, rx: 0.06 },
-    { dx: 0.024, dy: -0.105, dz: 0.008, w: 0.058, h: 0.092, rz: -0.22, rx: -0.05 },
-    { dx: -0.012, dy: -0.172, dz: 0.012, w: 0.064, h: 0.098, rz: 0.20, rx: 0.06 },
-    { dx: 0.018, dy: -0.248, dz: 0.015, w: 0.072, h: 0.112, rz: -0.16, rx: -0.04 }
-  ];
-
-  folds.forEach((f, idx) => {
-    const geo = new THREE.BoxGeometry(f.w * scale, f.h * scale, 0.006);
-    triplanarUv(geo, SMALL_TILE, [x + f.dx, y + f.dy, z]);
-    const flap = mesh(geo, shideMat, `${name}-flap-${idx}`);
-    flap.position.set(f.dx * scale, f.dy * scale, f.dz * scale);
-    flap.rotation.set(f.rx, (rand() - 0.5) * 0.08, f.rz);
-    flap.castShadow = true;
-    flap.receiveShadow = true;
-    pivot.add(flap);
-  });
-
-  // 绑定微风低速摆动参数（由 tree-sway 统一驱动）
-  pivot.userData.branchSway = {
-    phase: rand() * Math.PI * 2,
-    period: 3.1 + rand() * 1.2,
-    amplitude: 0.032,
-    anchor: new THREE.Vector3(0, 0, 0)
-  };
-  return pivot;
+  for (let i = 0; i < mossCount; i++) {
+    const u = -0.92 + (1.84 * i) / (mossCount - 1) + (rand() - 0.5) * 0.06;
+    const x = u * half;
+    const y = topY + camber * (x / (P.kasagi.length / 2)) ** 2 - 0.008;
+    const z = (rand() - 0.5) * (P.kasagi.depth * 0.36);
+    const r = 0.14 + rand() * 0.11;
+    const mGeo = rockGeometry(r, 9400 + i * 29, {
+      widthSegments: 10,
+      heightSegments: 7,
+      wobble: 0.26,
+      flatten: 0.24
+    });
+    triplanarUv(mGeo, 0.28, [x, y, z]);
+    const mat = i % 2 === 0 ? M.mossWet : M.mossStone;
+    const mPatch = mesh(mGeo, mat, `kasagi-moss-${i}`);
+    mPatch.position.set(x, y, z);
+    mPatch.scale.set(1.55, 0.36, 0.82);
+    mPatch.castShadow = false;
+    mPatch.receiveShadow = true;
+    mPatch.userData.noCast = true;
+    mPatch.userData.noOutline = true;
+    g.add(mPatch);
+  }
+  return g;
 }
 
 /**
- * 横梁（貫 nuki）处的日式注连绳（しめ縄）与纸垂（紙垂）装饰组件：
- * - 双股螺旋拧结的悬链线稻草绳（中间浑厚饱满，向两侧立柱收束并扎结）
- * - 3 处草绳束结与两端垂穗
- * - 5 挂随风轻摆的白色奉书纸纸垂
+ * 参考第三张图：横梁（貫）与立柱交接处及横梁侧面的极简暗金色「奉」「納」及竖向奉纳铭文细节（纯几何笔画，不使用任何字体加载）。
  */
-function buildShimenawa(T, rand) {
-  const g = group('shimenawa-group');
-  const spanHalf = P.post.x - 0.12; // 1.68 m，两端紧箍在左右立柱内侧
-  const baseY = P.nuki.y1 - 0.04;   // 2.78 m，沿贯（下横梁）正面上沿悬挂
-  const baseZ = P.nuki.depth / 2 + 0.052;
-  const sag = 0.13;
-  const samples = 32;
+function buildDedicationInscriptions(T) {
+  const g = group('torii-inscriptions');
+  const yCenter = (P.nuki.y0 + P.nuki.y1) / 2;
+  const zFront = P.nuki.depth / 2 + 0.012;
+  const mat = T.goldInscription;
 
-  // 双股拧绳：沿悬链线互相螺旋缠绕，利用圆柱截面扫掠形成中段粗、两端细的注连绳本体
-  for (let strand = 0; strand < 2; strand++) {
-    const phase0 = strand * Math.PI;
-    const pts = [];
-    for (let i = 0; i <= samples; i++) {
-      const u = i / samples;
-      const x = -spanHalf + u * (spanHalf * 2);
-      const tNorm = x / spanHalf; // [-1, 1]
-      const catenaryY = baseY - sag * (1 - tNorm * tNorm);
-      const envelope = Math.sin(u * Math.PI); // 中央最粗，两端收细
-      const twistAngle = u * Math.PI * 14 + phase0;
-      const twistR = 0.018 * (0.45 + 0.55 * envelope);
-      pts.push(new THREE.Vector3(
-        x,
-        catenaryY + Math.sin(twistAngle) * twistR,
-        baseZ + Math.cos(twistAngle) * twistR + 0.012 * envelope
-      ));
+  const addStroke = (name, x, y, z, w, h, d, rz = 0) => {
+    const geo = new THREE.BoxGeometry(w, h, d);
+    triplanarUv(geo, SMALL_TILE, [x, y, z]);
+    const s = mesh(geo, mat, name);
+    s.position.set(x, y, z);
+    s.rotation.z = rz;
+    s.castShadow = false;
+    s.receiveShadow = true;
+    s.userData.noCast = true;
+    s.userData.noOutline = true;
+    g.add(s);
+  };
+
+  // 1) 右柱横梁正面：「奉」字极简暗金笔画（三横一竖一撇一捺）
+  const rx = P.post.x * 0.94;
+  addStroke('insc-hou-h1', rx, yCenter + 0.048, zFront, 0.095, 0.012, 0.006, 0.03);
+  addStroke('insc-hou-h2', rx, yCenter + 0.018, zFront, 0.076, 0.011, 0.006, 0.02);
+  addStroke('insc-hou-h3', rx, yCenter - 0.012, zFront, 0.112, 0.012, 0.006, 0.02);
+  addStroke('insc-hou-v1', rx, yCenter - 0.004, zFront, 0.013, 0.125, 0.006, 0.0);
+  addStroke('insc-hou-s1', rx - 0.036, yCenter - 0.032, zFront, 0.055, 0.011, 0.006, 0.58);
+  addStroke('insc-hou-s2', rx + 0.036, yCenter - 0.032, zFront, 0.055, 0.011, 0.006, -0.58);
+
+  // 2) 左柱横梁正面：「納」字极简暗金笔画（绞丝旁 + 内框）
+  const lx = -P.post.x * 0.94;
+  addStroke('insc-nou-l1', lx - 0.034, yCenter + 0.028, zFront, 0.042, 0.011, 0.006, 0.62);
+  addStroke('insc-nou-l2', lx - 0.034, yCenter - 0.002, zFront, 0.044, 0.011, 0.006, -0.52);
+  addStroke('insc-nou-l3', lx - 0.034, yCenter - 0.036, zFront, 0.012, 0.062, 0.006, 0.0);
+  addStroke('insc-nou-r1', lx + 0.024, yCenter + 0.038, zFront, 0.064, 0.012, 0.006, 0.0);
+  addStroke('insc-nou-r2', lx - 0.004, yCenter - 0.008, zFront, 0.012, 0.095, 0.006, 0.0);
+  addStroke('insc-nou-r3', lx + 0.052, yCenter - 0.008, zFront, 0.012, 0.095, 0.006, 0.0);
+  addStroke('insc-nou-r4', lx + 0.024, yCenter + 0.002, zFront, 0.036, 0.011, 0.006, -0.45);
+
+  // 3) 横梁（貫）左右外伸侧面与立柱外侧的极简暗金色奉纳小字铭文列
+  for (const side of [-1, 1]) {
+    const xOut = side * (P.nuki.length / 2 - 0.16);
+    for (let k = 0; k < 4; k++) {
+      const yk = yCenter + 0.042 - k * 0.028;
+      addStroke(`insc-side-${side > 0 ? 'r' : 'l'}-${k}`, xOut, yk, zFront, 0.032, 0.009, 0.005, (k % 2 - 0.5) * 0.15);
     }
-    const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5);
-    const tubeGeo = new THREE.TubeGeometry(curve, 36, 0.036, 8, false);
-    // 将中段顶点沿法线适度外扩，呈现传统「大根注連」中腹饱满鼓起的立体造型
-    const pos = tubeGeo.getAttribute('position');
-    const nrm = tubeGeo.getAttribute('normal');
-    for (let k = 0; k < pos.count; k++) {
-      const vx = pos.getX(k);
-      const swell = Math.max(0, 1 - (vx / spanHalf) ** 2);
-      const extra = swell * 0.024;
-      pos.setXYZ(
-        k,
-        vx + nrm.getX(k) * extra * 0.25,
-        pos.getY(k) + nrm.getY(k) * extra,
-        pos.getZ(k) + nrm.getZ(k) * extra
-      );
-    }
-    tubeGeo.computeVertexNormals();
-    triplanarUv(tubeGeo, SMALL_TILE, [0, baseY, baseZ]);
-    const ropeMesh = mesh(tubeGeo, T.shimenawa, `shimenawa-strand-${strand}`);
-    ropeMesh.castShadow = true;
-    ropeMesh.receiveShadow = true;
-    g.add(ropeMesh);
   }
-
-  // 两端立柱捆扎绳箍与中央绳结
-  for (const [tag, kx, rKnot] of [['left', -spanHalf + 0.06, 0.048], ['center', 0, 0.068], ['right', spanHalf - 0.06, 0.048]]) {
-    const tNorm = kx / spanHalf;
-    const ky = baseY - sag * (1 - tNorm * tNorm);
-    const knot = taperedCylinder(`shimenawa-knot-${tag}`, T.shimenawa, {
-      x: kx,
-      y: ky,
-      z: baseZ + 0.008,
-      height: 0.095,
-      rBottom: rKnot,
-      rTop: rKnot * 0.94,
-      segments: 12,
-      tiltZ: Math.PI / 2
-    });
-    triplanarUv(knot.geometry, SMALL_TILE, [kx, ky, baseZ]);
-    knot.castShadow = true;
-    knot.receiveShadow = true;
-    g.add(knot);
-  }
-
-  // 绳中段 3 束下垂草穗（の子 / わら房）
-  const tasselPositions = [-0.86, 0.0, 0.86];
-  tasselPositions.forEach((tx, idx) => {
-    const tNorm = tx / spanHalf;
-    const ty = baseY - sag * (1 - tNorm * tNorm) - 0.03;
-    const tasselPivot = group(`shimenawa-tassel-${idx}`);
-    tasselPivot.position.set(tx, ty, baseZ + 0.006);
-    const tassel = taperedCylinder(`shimenawa-tassel-mesh-${idx}`, T.shimenawa, {
-      x: 0,
-      y: -0.085,
-      z: 0,
-      height: 0.17,
-      rBottom: 0.026,
-      rTop: 0.012,
-      segments: 10
-    });
-    triplanarUv(tassel.geometry, SMALL_TILE, [tx, ty - 0.085, baseZ]);
-    tassel.castShadow = true;
-    tassel.receiveShadow = true;
-    tasselPivot.add(tassel);
-    tasselPivot.userData.branchSway = {
-      phase: rand() * Math.PI * 2,
-      period: 3.6 + rand() * 1.2,
-      amplitude: 0.022,
-      anchor: new THREE.Vector3(0, 0, 0)
-    };
-    g.add(tasselPivot);
-  });
-
-  // 5 挂神圣白纸垂（しで），沿注连绳下缘对称错落排布
-  const shideOffsets = [
-    { x: -1.18, scale: 0.88 },
-    { x: -0.58, scale: 0.96 },
-    { x: 0.0, scale: 1.06 },
-    { x: 0.58, scale: 0.96 },
-    { x: 1.18, scale: 0.88 }
-  ];
-  shideOffsets.forEach((item, idx) => {
-    const tNorm = item.x / spanHalf;
-    const sy = baseY - sag * (1 - tNorm * tNorm) - 0.038;
-    const sz = baseZ + 0.024 + (1 - tNorm * tNorm) * 0.01;
-    g.add(buildSingleShide(`shide-${idx}`, T.shide, item.x, sy, sz, item.scale, rand));
-  });
 
   return g;
+}
+
+/**
+ * 参考第二张图（93A117F0-2F1E-44B6-9BD2-61BF94E36758.png）：
+ * 1:1 还原日式朱涂木造春日灯笼（木造朱塗灯籠）：
+ * - 覆苔基础台石 + 黑漆根巻
+ * - 朱红方形竿柱（正面带竖排奉纳墨迹笔画）
+ * - 十字交叉朱红腕木（带黑漆端头木口）+ 叠涩中台受座
+ * - 火袋：四角朱柱 + 暖黄微光障子纸内芯 + 四面深绿木格子窗棂（緑格子 3×3）+ 中央暗金徽章 + 檐下白壁
+ * - 反り弧形黑漆切妻造屋顶（含朱红飞檐垂木、前后破风板、悬鱼与栋木鬼板）
+ */
+function buildWoodenShrineLantern(name, T, M, lx, ly, lz, rand) {
+  const lantern = group(name);
+  lantern.position.set(lx, ly, lz);
+
+  const addBox = (partName, mat, x, y, z, w, h, d, opts = {}) => {
+    const geo = new THREE.BoxGeometry(w, h, d);
+    triplanarUv(geo, SMALL_TILE, [lx + x, ly + y, lz + z]);
+    const m = mesh(geo, mat, `${name}-${partName}`);
+    m.position.set(x, y, z);
+    if (opts.rx) m.rotation.x = opts.rx;
+    if (opts.ry) m.rotation.y = opts.ry;
+    if (opts.rz) m.rotation.z = opts.rz;
+    m.castShadow = opts.cast !== false;
+    m.receiveShadow = true;
+    if (opts.noCast) m.userData.noCast = true;
+    if (opts.noOutline) m.userData.noOutline = true;
+    lantern.add(m);
+    return m;
+  };
+
+  // 1) 基础台石（覆苔石座）+ 黑漆根巻
+  const baseGeo = slabGeometry(beveledSquareRing(0.21, 0.04), 0.16);
+  triplanarUv(baseGeo, STONE_TILE, [lx, ly + 0.08, lz]);
+  const stonePlinth = mesh(baseGeo, T.stoneBase, `${name}-plinth`);
+  stonePlinth.position.set(0, 0.08, 0);
+  stonePlinth.castShadow = true;
+  stonePlinth.receiveShadow = true;
+  lantern.add(stonePlinth);
+
+  addBox('nemaki', T.black, 0, 0.24, 0, 0.21, 0.22, 0.21);
+  addBox('nemaki-collar', T.blackFade, 0, 0.35, 0, 0.22, 0.025, 0.22, { noOutline: true, noCast: true, cast: false });
+
+  // 2) 朱红方形竿柱（高 1.18m，正面带竖排奉纳墨迹笔画）
+  const postH = 1.18;
+  const postY = 0.35 + postH / 2;
+  addBox('post', T.post, 0, postY, 0, 0.165, postH, 0.165);
+
+  // 竿柱正面竖排奉纳墨字细节（还原第二张图灯笼柱身上的竖排黑墨字）
+  for (let c = 0; c < 5; c++) {
+    const cy = 0.56 + c * 0.14;
+    addBox(`post-kanji-h-${c}`, T.black, 0, cy, 0.086, 0.048, 0.012, 0.005, {
+      rz: (rand() - 0.5) * 0.15, noOutline: true, noCast: true, cast: false
+    });
+    addBox(`post-kanji-v-${c}`, T.black, (c % 2 - 0.5) * 0.014, cy - 0.015, 0.086, 0.012, 0.052, 0.005, {
+      noOutline: true, noCast: true, cast: false
+    });
+  }
+
+  // 3) 十字腕木（支撑横木）与中台受座
+  const armY = 1.56;
+  addBox('arm-x', T.lacquer, 0, armY, 0, 0.58, 0.068, 0.095);
+  addBox('arm-z', T.lacquer, 0, armY, 0, 0.095, 0.068, 0.58);
+  // 腕木两端黑漆木口包头
+  for (const s of [-1, 1]) {
+    addBox(`arm-cap-x-${s > 0 ? 'r' : 'l'}`, T.black, s * 0.292, armY, 0, 0.018, 0.072, 0.10, { noOutline: true });
+    addBox(`arm-cap-z-${s > 0 ? 'f' : 'b'}`, T.black, 0, armY, s * 0.292, 0.10, 0.072, 0.018, { noOutline: true });
+  }
+  // 中台受座与白壁间板
+  addBox('platform-neck', T.lanternWhiteWall, 0, 1.625, 0, 0.38, 0.055, 0.38);
+  addBox('platform-main', T.lacquer, 0, 1.675, 0, 0.52, 0.058, 0.52);
+  addBox('platform-rim', T.deep, 0, 1.715, 0, 0.44, 0.032, 0.44);
+
+  // 4) 火袋（Firebox）：暖黄微光障子纸内芯 + 四角朱柱 + 深绿木格子窗棂（緑格子）
+  const fireH = 0.44;
+  const fireY = 1.73 + fireH / 2;
+  // 暖黄发光障子纸内胆（夜晚与面板滑块联动发光）
+  const paperCore = addBox('firebox-paper', T.lanternPaper, 0, fireY, 0, 0.34, fireH - 0.02, 0.34, {
+    noOutline: true, noCast: true, cast: false
+  });
+  paperCore.userData.isLanternGlow = true;
+
+  // 四角朱红立框柱
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      addBox(`firebox-corner-${sx > 0 ? 'r' : 'l'}${sz > 0 ? 'f' : 'b'}`, T.lacquer, sx * 0.175, fireY, sz * 0.175, 0.044, fireH, 0.044);
+    }
+  }
+
+  // 四面深绿窗框与 3×3 绿格子（1:1 还原第二张图中的绿色木格窗与中央小金章）
+  const faceDist = 0.176;
+  for (const side of [-1, 1]) {
+    // 前后面（±Z）
+    const zFace = side * faceDist;
+    addBox(`grille-z-top-${side}`, T.lanternLattice, 0, fireY + 0.18, zFace, 0.31, 0.024, 0.016, { noOutline: true });
+    addBox(`grille-z-bot-${side}`, T.lanternLattice, 0, fireY - 0.18, zFace, 0.31, 0.024, 0.016, { noOutline: true });
+    for (const gx of [-0.085, 0, 0.085]) {
+      addBox(`grille-z-v-${side}-${gx}`, T.lanternLattice, gx, fireY, zFace, 0.014, 0.36, 0.014, { noOutline: true, noCast: true, cast: false });
+    }
+    for (const gy of [-0.085, 0, 0.085]) {
+      addBox(`grille-z-h-${side}-${gy}`, T.lanternLattice, 0, fireY + gy, zFace, 0.31, 0.014, 0.014, { noOutline: true, noCast: true, cast: false });
+    }
+    addBox(`grille-z-emblem-${side}`, T.goldInscription, 0, fireY, zFace + side * 0.006, 0.046, 0.056, 0.008, { noOutline: true, noCast: true, cast: false });
+
+    // 左右面（±X）
+    const xFace = side * faceDist;
+    addBox(`grille-x-top-${side}`, T.lanternLattice, xFace, fireY + 0.18, 0, 0.016, 0.024, 0.31, { noOutline: true });
+    addBox(`grille-x-bot-${side}`, T.lanternLattice, xFace, fireY - 0.18, 0, 0.016, 0.024, 0.31, { noOutline: true });
+    for (const gz of [-0.085, 0, 0.085]) {
+      addBox(`grille-x-v-${side}-${gz}`, T.lanternLattice, xFace, fireY, gz, 0.014, 0.36, 0.014, { noOutline: true, noCast: true, cast: false });
+    }
+    for (const gy of [-0.085, 0, 0.085]) {
+      addBox(`grille-x-h-${side}-${gy}`, T.lanternLattice, xFace, fireY + gy, 0, 0.014, 0.014, 0.31, { noOutline: true, noCast: true, cast: false });
+    }
+    addBox(`grille-x-emblem-${side}`, T.goldInscription, xFace + side * 0.006, fireY, 0, 0.008, 0.056, 0.046, { noOutline: true, noCast: true, cast: false });
+  }
+
+  // 5) 檐下白壁与朱红头贯斗栱层（还原第二张图火袋上方的白色小壁面与朱红梁枋）
+  addBox('top-tie-beam', T.lacquer, 0, 2.18, 0, 0.44, 0.045, 0.44);
+  addBox('upper-white-wall', T.lanternWhiteWall, 0, 2.255, 0, 0.39, 0.105, 0.39);
+  addBox('eave-rafter-plate', T.lacquer, 0, 2.32, 0, 0.62, 0.036, 0.58);
+
+  // 6) 反り弧形黑漆切妻造屋顶（Curved Black Gable Roof）
+  const roofY = 2.34;
+  const roofHalfW = 0.42;
+  const roofHalfD = 0.38;
+  const ridgeH = 0.26;
+
+  for (const side of [-1, 1]) {
+    // 沿 X 方向从中央屋脊（x=0, y=roofY+ridgeH）向两侧微翘飞檐（x=side*roofHalfW, y=roofY）扫掠弧形坡面
+    const slopePts = [];
+    const segs = 6;
+    for (let i = 0; i <= segs; i++) {
+      const u = i / segs;
+      const sx = side * u * roofHalfW;
+      // 传统切妻屋顶微凹反り曲线（中段微垂、檐口上翘）
+      const sy = roofY + ridgeH * (1 - u) + Math.sin(u * Math.PI) * (-0.032) + (u ** 3) * 0.024;
+      slopePts.push(new THREE.Vector3(sx, sy, 0));
+    }
+    const slopeCurve = new THREE.CatmullRomCurve3(slopePts, false, 'centripetal', 0.5);
+    const slopeProfile = [
+      [-roofHalfD, -0.022],
+      [-roofHalfD, 0.022],
+      [roofHalfD, 0.022],
+      [roofHalfD, -0.022]
+    ];
+    const slopeGeo = sweepProfileGeometry(slopeCurve, slopeProfile, 14);
+    triplanarUv(slopeGeo, SMALL_TILE, [lx, ly + roofY, lz]);
+    const slopeMesh = mesh(slopeGeo, T.black, `${name}-roof-slope-${side > 0 ? 'r' : 'l'}`);
+    slopeMesh.castShadow = true;
+    slopeMesh.receiveShadow = true;
+    lantern.add(slopeMesh);
+
+    // 屋檐下方朱红色飞檐底板
+    addBox(`eave-under-${side > 0 ? 'r' : 'l'}`, T.lacquer, side * 0.21, roofY + 0.07, 0, 0.36, 0.018, roofHalfD * 1.82, {
+      rz: -side * 0.52, noOutline: true
+    });
+  }
+
+  // 屋脊栋木（棟木）与两端翘起鬼板（鬼瓦）
+  addBox('roof-ridge', T.black, 0, roofY + ridgeH + 0.02, 0, 0.075, 0.055, roofHalfD * 2.06);
+  for (const sz of [-1, 1]) {
+    addBox(`roof-oni-${sz > 0 ? 'f' : 'b'}`, T.black, 0, roofY + ridgeH + 0.042, sz * (roofHalfD + 0.015), 0.095, 0.085, 0.032);
+    // 破风山花下的暗金/黑漆悬鱼装饰
+    addBox(`roof-gegyo-${sz > 0 ? 'f' : 'b'}`, T.goldInscription, 0, roofY + ridgeH - 0.065, sz * (roofHalfD - 0.01), 0.048, 0.058, 0.014, {
+      noOutline: true, noCast: true, cast: false
+    });
+  }
+
+  // 屋顶表面轻微青苔积尘点缀
+  const roofMossGeo = rockGeometry(0.085, 9700 + Math.floor(rand() * 100), {
+    widthSegments: 8, heightSegments: 6, wobble: 0.22, flatten: 0.22
+  });
+  triplanarUv(roofMossGeo, 0.25, [lx, ly + roofY + ridgeH, lz]);
+  const roofMoss = mesh(roofMossGeo, M.mossWet, `${name}-roof-moss`);
+  roofMoss.position.set(0.08, roofY + ridgeH - 0.02, -0.06);
+  roofMoss.scale.set(1.4, 0.3, 1.1);
+  roofMoss.castShadow = false;
+  roofMoss.receiveShadow = true;
+  roofMoss.userData.noCast = true;
+  roofMoss.userData.noOutline = true;
+  lantern.add(roofMoss);
+
+  return lantern;
+}
+
+/**
+ * 供 lighting.js 获取两座参道木灯笼火袋在世界空间中的精确坐标，以便布置暖黄微光点光源
+ */
+export function getShrineLanternWorldPositions() {
+  const front = TORII.pair[0];
+  const baseY = toriiBaseY(front.z);
+  const yaw = front.yaw ?? 0;
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+  const zLocal = 0.86;
+  const fireYLocal = 1.95;
+
+  return [-1, 1].map((side) => {
+    const xLocal = side * 1.62;
+    const wx = front.x + xLocal * cos + zLocal * sin;
+    const wz = front.z - xLocal * sin + zLocal * cos;
+    const groundY = terrainHeight(wx, wz);
+    return {
+      side: side < 0 ? 'left' : 'right',
+      x: wx,
+      y: Math.max(groundY, baseY - 0.26) + fireYLocal,
+      z: wz
+    };
+  });
 }
 
 export function createTorii(M, options = {}) {
@@ -465,7 +615,6 @@ export function createTorii(M, options = {}) {
   const pair = TORII.pair.find((t) => t.id === id) ?? TORII.pair[0];
   const baseY = toriiBaseY(pair.z);
   const seed = options.seed ?? (pair.id === 'front' ? 23 : 41);
-  // 后座鸟居（rear）位于林荫更深处，明度微压（shade = 0.82），使前后双鸟居叠影层次分明
   const shade = pair.id === 'rear' ? 0.82 : 1.0;
   const T = M.makeToriiMaterials({ seed, baseY, shade });
   const rand = rng(pair.step * 613 + 17);
@@ -489,8 +638,8 @@ export function createTorii(M, options = {}) {
   root.add(nukiMossStrip('nuki-moss-a', T.deep, MOSS_STRIP.xCenter));
   root.add(nukiMossStrip('nuki-moss-b', T.deep, -MOSS_STRIP.xCenter));
 
-  // 横梁（貫）悬挂注连绳与随风摆动的纸垂装饰
-  root.add(buildShimenawa(T, rand));
+  // 横梁（貫）与柱侧的极简暗金色奉纳铭文笔画细节（不加牌匾、不挂注连绳纸垂）
+  root.add(buildDedicationInscriptions(T));
 
   const shimaki = mesh(shimakiGeometry(), T.lacquer, 'shimaki');
   shimaki.castShadow = true;
@@ -509,6 +658,9 @@ export function createTorii(M, options = {}) {
   kasagi.receiveShadow = true;
   root.add(kasagi);
 
+  // 顶部笠木重度积灰与厚青苔覆盖层
+  root.add(buildKasagiHeavyMoss(T, M, rand));
+
   root.add(gakuzuka(T));
 
   const nukiFace = P.nuki.depth / 2 + 0.006;
@@ -520,6 +672,30 @@ export function createTorii(M, options = {}) {
       width: 1.05,
       height: P.nuki.height * 0.42
     }));
+  }
+
+  // 在前座鸟居（toriiFront）前方的参道两侧对称布置一对 1:1 还原的日式朱涂春日木灯笼
+  if (pair.id === 'front') {
+    const yaw = pair.yaw ?? 0;
+    const cos = Math.cos(yaw);
+    const sin = Math.sin(yaw);
+    const zLocal = 0.86;
+    for (const side of [-1, 1]) {
+      const xLocal = side * 1.62;
+      const wx = pair.x + xLocal * cos + zLocal * sin;
+      const wz = pair.z - xLocal * sin + zLocal * cos;
+      const groundY = terrainHeight(wx, wz);
+      const yLocal = Math.max(groundY - baseY, -0.26);
+      root.add(buildWoodenShrineLantern(
+        `torii-lantern-${side < 0 ? 'left' : 'right'}`,
+        T,
+        M,
+        xLocal,
+        yLocal,
+        zLocal,
+        rand
+      ));
+    }
   }
 
   root.position.set(pair.x, baseY, pair.z);

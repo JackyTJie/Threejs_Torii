@@ -1,6 +1,7 @@
 // 动态昼夜切换系统（第三优先级）：
 // 支持「雨后深林默认基准」与「深夜 → 清晨 → 正午 → 黄昏 → 深夜」24 小时连续插值循环。
 // 同步联动：天空背景色调、主光源（日间太阳光 / 夜间冷蓝月光）方位角/仰角/色温/亮度、
+// 参道春日木灯笼暖黄微光亮度（夜晚/黄昏自动点亮暖黄微光，正午渐隐，面板可随时手动覆写）、
 // 半球补光、轮廓光、分层高度雾颜色与浓度、Bloom 辉光强度、以及水体/叶片/鸟居红漆着色器光照方向。
 import * as THREE from 'three';
 import { LIGHT, POST } from './config.js';
@@ -9,10 +10,6 @@ import { SUN_LINKED_MATERIALS } from './toon.js';
 
 const SHADOW_TARGET_Y = 0.4;
 
-/**
- * 24 小时关键帧表（hour ∈ [0, 24]）：
- * 其中 10.5h 锚定为当前「雨后深林静谧基准」，保证默认状态下 100% 保持原片氛围。
- */
 export const DAY_NIGHT_KEYFRAMES = [
   {
     id: 'midnight',
@@ -33,7 +30,8 @@ export const DAY_NIGHT_KEYFRAMES = [
     fogColorLow: 0x102026,
     fogColorHigh: 0x1d343e,
     fogDensity: 0.32,
-    bloomStrength: 0.25
+    bloomStrength: 0.26,
+    lanternBrightness: 1.35
   },
   {
     id: 'dawn',
@@ -54,7 +52,8 @@ export const DAY_NIGHT_KEYFRAMES = [
     fogColorLow: 0x2a4538,
     fogColorHigh: 0x5d7d6c,
     fogDensity: 0.34,
-    bloomStrength: 0.26
+    bloomStrength: 0.26,
+    lanternBrightness: 0.55
   },
   {
     id: 'default',
@@ -75,7 +74,8 @@ export const DAY_NIGHT_KEYFRAMES = [
     fogColorLow: POST.heightFog.color,
     fogColorHigh: POST.heightFog.sunTint,
     fogDensity: POST.heightFog.density,
-    bloomStrength: POST.bloom.strength
+    bloomStrength: POST.bloom.strength,
+    lanternBrightness: 0.42
   },
   {
     id: 'noon',
@@ -96,7 +96,8 @@ export const DAY_NIGHT_KEYFRAMES = [
     fogColorLow: 0x1d3629,
     fogColorHigh: 0x426652,
     fogDensity: 0.18,
-    bloomStrength: 0.22
+    bloomStrength: 0.22,
+    lanternBrightness: 0.08
   },
   {
     id: 'dusk',
@@ -117,7 +118,8 @@ export const DAY_NIGHT_KEYFRAMES = [
     fogColorLow: 0x2b241f,
     fogColorHigh: 0x61483a,
     fogDensity: 0.28,
-    bloomStrength: 0.28
+    bloomStrength: 0.28,
+    lanternBrightness: 1.15
   },
   {
     id: 'midnightEnd',
@@ -138,7 +140,8 @@ export const DAY_NIGHT_KEYFRAMES = [
     fogColorLow: 0x102026,
     fogColorHigh: 0x1d343e,
     fogDensity: 0.32,
-    bloomStrength: 0.25
+    bloomStrength: 0.26,
+    lanternBrightness: 1.35
   }
 ];
 
@@ -157,7 +160,6 @@ function smoothstep01(t) {
   return c * c * (3 - 2 * c);
 }
 
-/** 根据 0~24 小时插值计算出当前时刻的光影雾气状态 */
 export function sampleDayNightState(hour) {
   const h = ((hour % 24) + 24) % 24;
   let k0 = DAY_NIGHT_KEYFRAMES[0];
@@ -190,25 +192,22 @@ export function sampleDayNightState(hour) {
     fogColorLow: lerpColorHex(k0.fogColorLow, k1.fogColorLow, t),
     fogColorHigh: lerpColorHex(k0.fogColorHigh, k1.fogColorHigh, t),
     fogDensity: lerp(k0.fogDensity, k1.fogDensity),
-    bloomStrength: lerp(k0.bloomStrength, k1.bloomStrength)
+    bloomStrength: lerp(k0.bloomStrength, k1.bloomStrength),
+    lanternBrightness: lerp(k0.lanternBrightness, k1.lanternBrightness)
   };
 }
 
-/**
- * 创建动态昼夜切换控制器
- * @param {{scene:THREE.Scene, lighting:object, post:object}} ctx
- */
 export function createDayNightSystem({ scene, lighting, post }) {
   const DEFAULT_HOUR = 10.5;
   let currentHour = DEFAULT_HOUR;
   let autoCycle = false;
-  let cycleSpeed = 0.85; // 每秒推进的小时数（默认约 28 秒走完一昼夜）
+  let cycleSpeed = 0.85;
   let userFogOverride = null;
   let userBloomOverride = null;
+  let userLanternOverride = null;
   const listeners = new Set();
 
   function applyState(state) {
-    // 1) 更新主光源（日间太阳光 / 夜间月光）方向、色温、亮度与阴影视锥
     const dir = lightDirection(state.sunAzimuthDeg, state.sunElevationDeg);
     if (lighting && lighting.key) {
       const key = lighting.key;
@@ -232,7 +231,6 @@ export function createDayNightSystem({ scene, lighting, post }) {
       if (lighting.sunDirection) lighting.sunDirection.copy(dir);
     }
 
-    // 2) 更新半球补光、冷暖轮廓光、基础环境光
     if (lighting && lighting.fill) {
       lighting.fill.color.setHex(state.hemiSky);
       lighting.fill.groundColor.setHex(state.hemiGround);
@@ -247,7 +245,12 @@ export function createDayNightSystem({ scene, lighting, post }) {
       lighting.ambient.intensity = state.ambientIntensity;
     }
 
-    // 3) 同步场景雾与后处理分层高度雾颜色/浓度、Bloom 辉光
+    // 联动参道对称木灯笼暖黄微光（夜晚/黄昏自动点亮，或使用面板滑块设定值）
+    if (lighting && lighting.setLanternBrightness) {
+      const lb = userLanternOverride !== null ? userLanternOverride : state.lanternBrightness;
+      lighting.setLanternBrightness(lb);
+    }
+
     if (scene && scene.fog) {
       scene.fog.color.setHex(state.fogColorHigh);
     }
@@ -257,7 +260,6 @@ export function createDayNightSystem({ scene, lighting, post }) {
       post.setBloomStrength(userBloomOverride !== null ? userBloomOverride : state.bloomStrength);
     }
 
-    // 4) 同步所有挂有主光方向的自定义材质（叶片透光、水体波光反射、河床焦散、鸟居红漆微高光、向溪背阴青苔）
     for (const mat of SUN_LINKED_MATERIALS) {
       const u = mat.userData && mat.userData.uniforms;
       if (!u) continue;
@@ -278,6 +280,7 @@ export function createDayNightSystem({ scene, lighting, post }) {
     if (clearOverrides) {
       userFogOverride = null;
       userBloomOverride = null;
+      userLanternOverride = null;
     }
     currentHour = ((Number(h) % 24) + 24) % 24;
     const state = sampleDayNightState(currentHour);
@@ -290,6 +293,7 @@ export function createDayNightSystem({ scene, lighting, post }) {
     if (!found) return null;
     userFogOverride = null;
     userBloomOverride = null;
+    userLanternOverride = null;
     return setHour(found.hour);
   }
 
@@ -302,6 +306,7 @@ export function createDayNightSystem({ scene, lighting, post }) {
     autoCycle = false;
     userFogOverride = null;
     userBloomOverride = null;
+    userLanternOverride = null;
     return setHour(DEFAULT_HOUR);
   }
 
@@ -326,6 +331,10 @@ export function createDayNightSystem({ scene, lighting, post }) {
     },
     setBloomOverride(v) {
       userBloomOverride = v;
+    },
+    setLanternOverride(v) {
+      userLanternOverride = v;
+      if (lighting && lighting.setLanternBrightness) lighting.setLanternBrightness(v);
     },
     setHour,
     setPreset,

@@ -1,4 +1,4 @@
-// 材质库：六大类材质（木材 / 石材 / 水体 / 叶片 / 树皮 / 泥土）+ 底座 / 青苔 / 茎枝 / 薄雾 / 注连绳纸垂。
+// 材质库：六大类材质（木材 / 石材 / 水体 / 叶片 / 树皮 / 泥土）+ 底座 / 青苔 / 茎枝 / 薄雾 / 奉纳铭文 / 灯笼材质。
 import * as THREE from 'three';
 import { PALETTE, ANIM } from './config.js';
 import {
@@ -58,15 +58,15 @@ function stoneStepZone(name, { seed, mossHeight, mossAmount, wearStart, wearBand
     dust: PALETTE.soilWet,
     start: wearStart,
     band: wearBand,
-    wearAmount: 0.48,
-    dustAmount: 0.22,
+    wearAmount: 0.56,
+    dustAmount: 0.26,
     roughnessVar: 0.22
   });
   applyMossAttachment(material, {
     color: PALETTE.mossWet,
     height: mossHeight,
-    band: 1.15,
-    amount: mossAmount * 1.28
+    band: 1.25,
+    amount: mossAmount * 1.35
   });
   applyShadowLift(material, { lift: 0.08, knee: 0.38 });
   return material;
@@ -140,6 +140,9 @@ function water(name, {
   return material;
 }
 
+/** 收集参道木灯笼发光纸窗材质，供昼夜系统与设置面板实时调节暖黄灯光亮度 */
+export const LANTERN_GLOW_MATERIALS = [];
+
 function makeToriiMaterials({ seed = 23, baseY = 0, shade = 1.0 } = {}) {
   const paint = (palette, extraSeed, size = 1024) => weatheredPaintTexture({
     size,
@@ -152,15 +155,16 @@ function makeToriiMaterials({ seed = 23, baseY = 0, shade = 1.0 } = {}) {
   const sByte = Math.max(0, Math.min(255, Math.round(shade * 255)));
   const tintHex = (sByte << 16) | (sByte << 8) | sByte;
 
-  const lacquerRule = (material, roughnessVar = 0.46) => {
+  const lacquerRule = (material, roughnessVar = 0.52, toriiMode = 1.0) => {
     applyWeathering(material, {
       wear: PALETTE.toriiLacquerLoss,
       dust: PALETTE.soilWet,
       start: baseY,
       band: 1.35,
-      wearAmount: 0.46,
-      dustAmount: 0.16,
-      roughnessVar
+      wearAmount: 0.54,
+      dustAmount: 0.22,
+      roughnessVar,
+      toriiMode
     });
     applyShadowLift(material, { lift: 0.08, knee: 0.38 });
     return material;
@@ -171,41 +175,59 @@ function makeToriiMaterials({ seed = 23, baseY = 0, shade = 1.0 } = {}) {
     color: tintHex,
     band: 'mid',
     map: paint(PALETTE.toriiVermilion, 0)
-  }), 'toriiLacquer'), 0.48);
+  }), 'toriiLacquer'), 0.52, 1.0);
   applyMossAttachment(T.lacquer, {
     color: PALETTE.mossWet,
     height: baseY + 2.88,
     band: 0.45,
-    amount: 0.28
+    amount: 0.32
   });
 
   T.post = lacquerRule(named(toon({
     color: tintHex,
     band: 'mid',
     map: paint(PALETTE.toriiVermilion, 7)
-  }), 'toriiPost'), 0.52);
+  }), 'toriiPost'), 0.58, 1.0);
   applyMossAttachment(T.post, {
     color: PALETTE.mossWet,
-    height: baseY + 0.65,
-    band: 0.95,
-    amount: 0.54
+    height: baseY + 0.55,
+    band: 0.85,
+    amount: 0.56
   });
 
   T.deep = lacquerRule(named(toon({
     color: PALETTE.toriiVermilionDeep, band: 'soft'
-  }), 'toriiVermilionDeep'), 0.35);
+  }), 'toriiVermilionDeep'), 0.35, 1.0);
 
   T.fade = lacquerRule(named(toon({
     color: PALETTE.toriiVermilionFade, band: 'mid'
-  }), 'toriiVermilionFade'), 0.32);
+  }), 'toriiVermilionFade'), 0.32, 1.0);
 
-  T.black = lacquerRule(named(toon({
+  // 顶部笠木与眉木（黑漆）：积灰、长苔藓最严重（toriiMode = 2.0 + 强青苔附着）
+  T.black = named(toon({
     color: 0xffffff, band: 'mid', map: paint(PALETTE.toriiBlack, 13)
-  }), 'toriiBlack'), 0.38);
+  }), 'toriiBlack');
+  applyWeathering(T.black, {
+    wear: 0x262922,
+    dust: 0x454a3d,
+    start: baseY + 3.8,
+    band: 0.65,
+    wearAmount: 0.58,
+    dustAmount: 0.68,
+    roughnessVar: 0.22,
+    toriiMode: 2.0
+  });
+  applyMossAttachment(T.black, {
+    color: PALETTE.moss,
+    height: baseY + 4.45,
+    band: 0.65,
+    amount: 0.82
+  });
+  applyShadowLift(T.black, { lift: 0.08, knee: 0.38 });
 
   T.blackFade = lacquerRule(named(toon({
     color: PALETTE.toriiBlackFade, band: 'soft'
-  }), 'toriiBlackFade'), 0.25);
+  }), 'toriiBlackFade'), 0.25, 0.0);
 
   T.woodBare = named(toon({
     color: 0xffffff,
@@ -214,7 +236,7 @@ function makeToriiMaterials({ seed = 23, baseY = 0, shade = 1.0 } = {}) {
       size: 512,
       base: PALETTE.toriiWoodBare,
       dark: PALETTE.woodDark,
-      light: PALETTE.toriiVermilionFade,
+      light: PALETTE.toriiVermilionDeep,
       planks: 4,
       seed: seed + 19
     })
@@ -224,8 +246,8 @@ function makeToriiMaterials({ seed = 23, baseY = 0, shade = 1.0 } = {}) {
     dust: PALETTE.soilWet,
     start: baseY - 0.3,
     band: 1.0,
-    wearAmount: 0.5,
-    dustAmount: 0.2
+    wearAmount: 0.6,
+    dustAmount: 0.25
   });
 
   T.stoneBase = named(toon({
@@ -244,48 +266,46 @@ function makeToriiMaterials({ seed = 23, baseY = 0, shade = 1.0 } = {}) {
     dust: PALETTE.soilWet,
     start: baseY - 0.34,
     band: 0.8,
-    wearAmount: 0.4,
-    dustAmount: 0.22
+    wearAmount: 0.45,
+    dustAmount: 0.25
   });
   applyMossAttachment(T.stoneBase, {
     color: PALETTE.moss,
-    height: baseY + 0.32,
+    height: baseY + 0.36,
     band: 0.85,
-    amount: 0.58
+    amount: 0.62
   });
 
-  // 注连绳（しめ縄）：粗编稻草绳材质，带自然草茎纹理与微润风化
-  T.shimenawa = named(toon({
-    color: tintHex,
-    band: 'mid',
-    map: woodTexture({
-      size: 512,
-      base: 0xc8ae74,
-      dark: 0x826b3e,
-      light: 0xe3cb96,
-      planks: 12,
-      seed: seed + 43
-    })
-  }), 'toriiShimenawa');
-  applyWeathering(T.shimenawa, {
-    wear: 0x6b5630,
-    dust: PALETTE.soilWet,
-    start: baseY + 2.4,
-    band: 0.65,
-    wearAmount: 0.32,
-    dustAmount: 0.14,
-    roughnessVar: 0.18
-  });
-  applyShadowLift(T.shimenawa, { lift: 0.18, knee: 0.48 });
+  // 极简暗金色奉纳铭文材质（用于横梁侧面与柱侧暗金小字笔画细节）
+  T.goldInscription = named(toon({
+    color: 0x9e7b36,
+    emissive: 0x38280b,
+    emissiveIntensity: 0.22,
+    band: 'hard'
+  }), 'toriiGoldInscription');
 
-  // 纸垂（紙垂 / しで）：神圣奉书纸材质，暖白微透光，轮廓鲜明
-  T.shide = named(toon({
-    color: 0xf4f0e4,
-    band: 'soft',
-    side: THREE.DoubleSide
-  }), 'toriiShide');
-  applyLeafTranslucency(T.shide, { color: 0xfff8e6, strength: 0.28, power: 2.2 });
-  applyShadowLift(T.shide, { lift: 0.26, knee: 0.56 });
+  // 参道春日木灯笼专属材质（绿格子窗棂 / 白壁 / 暖黄发光障子纸）
+  T.lanternLattice = named(toon({
+    color: 0x1d4f38,
+    band: 'mid'
+  }), 'toriiLanternLattice');
+  applyShadowLift(T.lanternLattice, { lift: 0.16, knee: 0.45 });
+
+  T.lanternWhiteWall = named(toon({
+    color: 0xe6e0d2,
+    band: 'soft'
+  }), 'toriiLanternWhiteWall');
+  applyShadowLift(T.lanternWhiteWall, { lift: 0.18, knee: 0.48 });
+
+  T.lanternPaper = named(toon({
+    color: 0xf7ecd2,
+    emissive: 0xffa834,
+    emissiveIntensity: 0.38,
+    band: 'soft'
+  }), 'glowLanternPaper');
+  if (!LANTERN_GLOW_MATERIALS.includes(T.lanternPaper)) {
+    LANTERN_GLOW_MATERIALS.push(T.lanternPaper);
+  }
 
   return T;
 }
@@ -336,7 +356,6 @@ export function createMaterialLibrary() {
   applyShadowLift(M.soilStreamBed, { lift: 0.22, knee: 0.52 });
   applySubmergedCaustics(M.soilStreamBed);
 
-  // 弯曲河道中心专属暖褐砂砾河床材质（仅贴在溪流内部弯曲河槽，绝不外露到岸上）
   M.riverbedSand = named(toon({
     color: 0xffffff, band: 'soft',
     map: sandTexture({
@@ -354,18 +373,18 @@ export function createMaterialLibrary() {
     map: soilTexture({ size: 1024, base: PALETTE.soilDark, seed: 139 })
   }), 'soilCut');
 
-  /* ---------------- 石材（三渲二天然山石与河石材质：层次分明、棱角清晰、部分石头覆自然青苔） ---------------- */
+  /* ---------------- 石材 ---------------- */
   M.stoneStepLower = stoneStepZone('stoneStepLower', {
-    seed: 13, mossHeight: 1.75, mossAmount: 0.36, wearStart: 0.16, wearBand: 1.6
+    seed: 13, mossHeight: 1.75, mossAmount: 0.38, wearStart: 0.16, wearBand: 1.6
   });
   M.stoneStepMid = stoneStepZone('stoneStepMid', {
-    seed: 17, mossHeight: 3.35, mossAmount: 0.30, wearStart: 1.75, wearBand: 1.6
+    seed: 17, mossHeight: 3.35, mossAmount: 0.32, wearStart: 1.75, wearBand: 1.6
   });
   M.stoneStepUpper = stoneStepZone('stoneStepUpper', {
-    seed: 19, mossHeight: 5.0, mossAmount: 0.24, wearStart: 3.35, wearBand: 1.6
+    seed: 19, mossHeight: 5.0, mossAmount: 0.26, wearStart: 3.35, wearBand: 1.6
   });
   M.stoneSlab = stoneStepZone('stoneSlab', {
-    seed: 23, mossHeight: 5.6, mossAmount: 0.32, wearStart: 4.4, wearBand: 1.8
+    seed: 23, mossHeight: 5.6, mossAmount: 0.34, wearStart: 4.4, wearBand: 1.8
   });
   M.stoneStepWet = named(toon({
     color: 0xffffff, band: 'mid',
@@ -376,14 +395,13 @@ export function createMaterialLibrary() {
   }), 'stoneStepWet');
   applyWeathering(M.stoneStepWet, {
     wear: 0x363e42, dust: PALETTE.soilWet, start: 0, band: 1.2,
-    wearAmount: 0.32, dustAmount: 0.16, roughnessVar: 0.28
+    wearAmount: 0.38, dustAmount: 0.20, roughnessVar: 0.28
   });
   applyMossAttachment(M.stoneStepWet, {
-    color: PALETTE.mossWet, height: 3.2, band: 1.8, amount: 0.42
+    color: PALETTE.mossWet, height: 3.2, band: 1.8, amount: 0.46
   });
   applyShadowLift(M.stoneStepWet, { lift: 0.22, knee: 0.52 });
 
-  // 1) 天然风化山石（明快灰褐/青灰花岗安山岩，折面明暗清晰，顶面局部带青苔斑块）
   M.stoneRock = named(toon({
     color: 0xffffff, band: 'mid',
     map: stoneTexture({
@@ -398,7 +416,6 @@ export function createMaterialLibrary() {
   applyMossAttachment(M.stoneRock, { color: 0x3b6326, height: 0.28, band: 0.45, amount: 0.35 });
   applyShadowLift(M.stoneRock, { lift: 0.32, knee: 0.62 });
 
-  // 2) 溪畔与雨淋湿润山石（中明度青灰岩体，带局部翠绿湿苔，绝不死黑）
   M.stoneRockWet = named(toon({
     color: 0xffffff, band: 'mid',
     map: stoneTexture({
@@ -413,7 +430,6 @@ export function createMaterialLibrary() {
   applyMossAttachment(M.stoneRockWet, { color: 0x385e24, height: 0.32, band: 0.5, amount: 0.42 });
   applyShadowLift(M.stoneRockWet, { lift: 0.34, knee: 0.64 });
 
-  // 3) 覆苔山石（仅在顶面平台生长自然森林青苔垫，侧面露出清晰灰褐岩面）
   M.stoneRockMossy = named(toon({
     color: 0xffffff, band: 'mid',
     map: stoneTexture({
@@ -425,7 +441,6 @@ export function createMaterialLibrary() {
   applyShadowLift(M.stoneRockMossy, { lift: 0.34, knee: 0.64 });
   applySubmergedCaustics(M.stoneRockMossy);
 
-  // 4) 溪内与水下河石（温润灰白/浅灰褐溪石，水下清晰可见，出水折面立体）
   M.stoneStream = named(toon({
     color: 0xffffff, band: 'mid',
     map: stoneTexture({
@@ -441,7 +456,6 @@ export function createMaterialLibrary() {
   applyShadowLift(M.stoneStream, { lift: 0.35, knee: 0.65 });
   applySubmergedCaustics(M.stoneStream);
 
-  // 5) 层理劈理岩（暖灰石英砂岩色阶，与冷灰石形成自然地质对比）
   M.stoneRockStratified = named(toon({
     color: 0xffffff, band: 'hard',
     map: stoneTexture({
@@ -457,7 +471,6 @@ export function createMaterialLibrary() {
   applyShadowLift(M.stoneRockStratified, { lift: 0.34, knee: 0.64 });
   applySubmergedCaustics(M.stoneRockStratified);
 
-  // 6) 棱角碎石与浅色河砾（Scree & River Cobble Chips）
   M.stoneChip = named(toon({
     color: 0xffffff, band: 'hard',
     map: stoneTexture({
@@ -563,7 +576,6 @@ export function createMaterialLibrary() {
   M.leafSheetGroundWet = leaf('leafSheetGroundWet', PALETTE.groundLeafDeep, {
     tint: 0x2b3326, strength: 0.02, power: 3.8
   });
-  // 溪面漂浮落叶专用材质（暖金黄 / 琥珀橙 / 枫红，带柔和透光与暗部提亮，随水波起伏漂流）
   M.leafSheetFloatingGold = leaf('leafSheetFloatingGold', 0xe6b43c, {
     tint: 0xf7d56e, strength: 0.36, power: 2.2
   });

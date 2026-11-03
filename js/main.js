@@ -39,6 +39,7 @@ export function createApp(canvas, options = {}) {
   const dayNight = createDayNightSystem({ scene, lighting, post });
   const ui = options.ui === false ? null : createSettingsPanel({
     post,
+    lighting,
     dayNight,
     animations: assembly.animations
   });

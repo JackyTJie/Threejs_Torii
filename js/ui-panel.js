@@ -1,8 +1,8 @@
 // 右下角圆球形设置图标与圆角矩形动态参数控制面板（第三优先级）：
 // - 默认收起在画面右下角，仅显示一个低调精致的 44x44px 圆球形设置图标，不干扰画面观赏；
 // - 点击圆球平滑展开圆角矩形毛玻璃控制面板，所有参数均以当前「雨后深林静谧效果」为默认基准；
-// - 支持动态昼夜切换（预设时段 / 24h 时间轴 / 自动昼夜循环）、SSAO 闭塞强度、分层高度雾浓度与流速、
-//   鸟居焦点景深 DOF 强度、Bloom 辉光强度、山林微风摆动强度实时调节与一键重置。
+// - 支持动态昼夜切换（预设时段 / 24h 时间轴 / 自动昼夜循环）、参道木灯笼暖黄微光亮度、
+//   SSAO 闭塞强度、分层高度雾浓度与流速、鸟居焦点景深 DOF 强度、Bloom 辉光强度、山林微风摆动强度实时调节与一键重置。
 import { POST } from './config.js';
 
 function formatHour(h) {
@@ -20,7 +20,7 @@ function periodBadge(h) {
   return '深夜 · 幽谷月华';
 }
 
-export function createSettingsPanel({ post, dayNight, animations }) {
+export function createSettingsPanel({ post, lighting, dayNight, animations }) {
   if (
     typeof document === 'undefined' ||
     !document.body ||
@@ -77,7 +77,7 @@ export function createSettingsPanel({ post, dayNight, animations }) {
       position: absolute;
       right: 0;
       bottom: 56px;
-      width: 310px;
+      width: 316px;
       padding: 16px 18px;
       border-radius: 18px;
       background: rgba(16, 25, 21, 0.86);
@@ -154,7 +154,7 @@ export function createSettingsPanel({ post, dayNight, animations }) {
       font-weight: 600;
     }
     .torii-row {
-      margin-bottom: 10px;
+      margin-bottom: 9px;
     }
     .torii-row-head {
       display: flex;
@@ -234,7 +234,6 @@ export function createSettingsPanel({ post, dayNight, animations }) {
   const panel = document.createElement('div');
   panel.className = 'torii-panel';
 
-  // 顶部标题栏
   const header = document.createElement('div');
   header.className = 'torii-panel-header';
   const title = document.createElement('div');
@@ -253,7 +252,6 @@ export function createSettingsPanel({ post, dayNight, animations }) {
   header.appendChild(badge);
   panel.appendChild(header);
 
-  // 时段快捷预设行
   const presetsWrap = document.createElement('div');
   presetsWrap.className = 'torii-presets';
   const presetDefs = [
@@ -341,7 +339,20 @@ export function createSettingsPanel({ post, dayNight, animations }) {
     }
   });
 
-  // 2) SSAO 闭塞阴影强度
+  // 2) 参道春日木灯笼暖黄微光亮度滑块
+  const lanternRow = makeSliderRow({
+    label: '参道灯笼暖黄微光亮度',
+    min: 0,
+    max: 2.0,
+    step: 0.05,
+    value: lighting && lighting.getLanternBrightness ? lighting.getLanternBrightness() : 0.42,
+    onInput: (v) => {
+      if (dayNight && dayNight.setLanternOverride) dayNight.setLanternOverride(v);
+      else if (lighting && lighting.setLanternBrightness) lighting.setLanternBrightness(v);
+    }
+  });
+
+  // 3) SSAO 闭塞阴影强度
   const ssaoRow = makeSliderRow({
     label: 'SSAO 环境光遮蔽（叶隙 / 石缝）',
     min: 0,
@@ -353,7 +364,7 @@ export function createSettingsPanel({ post, dayNight, animations }) {
     }
   });
 
-  // 3) 分层动态高度雾浓度
+  // 4) 分层动态高度雾浓度
   const fogDensityRow = makeSliderRow({
     label: '分层高度雾浓度（低谷浓 / 高处淡）',
     min: 0,
@@ -366,7 +377,7 @@ export function createSettingsPanel({ post, dayNight, animations }) {
     }
   });
 
-  // 4) 高度雾噪声流动速度
+  // 5) 高度雾噪声流动速度
   const fogSpeedRow = makeSliderRow({
     label: '山谷雾气扰动流速',
     min: 0,
@@ -378,7 +389,7 @@ export function createSettingsPanel({ post, dayNight, animations }) {
     }
   });
 
-  // 5) 鸟居焦点景深 DOF 强度
+  // 6) 鸟居焦点景深 DOF 强度
   const dofRow = makeSliderRow({
     label: '鸟居焦点景深虚化（DOF）',
     min: 0,
@@ -390,7 +401,7 @@ export function createSettingsPanel({ post, dayNight, animations }) {
     }
   });
 
-  // 6) Bloom 辉光强度
+  // 7) Bloom 辉光强度
   const bloomRow = makeSliderRow({
     label: '暗部透气辉光（Bloom）',
     min: 0,
@@ -403,9 +414,9 @@ export function createSettingsPanel({ post, dayNight, animations }) {
     }
   });
 
-  // 7) 植被与注连绳纸垂微风摆动强度
+  // 8) 植被微风摆动强度
   const windRow = makeSliderRow({
-    label: '林木与注连绳纸垂微风摆幅',
+    label: '山林枝叶微风摆幅',
     min: 0,
     max: 1.8,
     step: 0.05,
@@ -417,7 +428,6 @@ export function createSettingsPanel({ post, dayNight, animations }) {
     }
   });
 
-  // 底部按钮栏：自动昼夜循环 + 一键恢复默认基准
   const footer = document.createElement('div');
   footer.className = 'torii-footer';
 
@@ -446,6 +456,7 @@ export function createSettingsPanel({ post, dayNight, animations }) {
     updateCycleBtn();
     highlightPreset('default');
     timeRow.setValue(10.5);
+    lanternRow.setValue(0.42);
     ssaoRow.setValue(1.0);
     fogDensityRow.setValue(0.24);
     fogSpeedRow.setValue(0.35);
@@ -473,6 +484,9 @@ export function createSettingsPanel({ post, dayNight, animations }) {
     unsub = dayNight.onChange((state) => {
       timeRow.setValue(state.hour);
       badge.textContent = periodBadge(state.hour);
+      if (lighting && lighting.getLanternBrightness) {
+        lanternRow.setValue(lighting.getLanternBrightness());
+      }
       if (post) {
         fogDensityRow.setValue(post.passes.ssaoFog.material.uniforms.uFogDensity.value);
         bloomRow.setValue(post.passes.composite.material.uniforms.uBloomStrength.value);
@@ -480,7 +494,6 @@ export function createSettingsPanel({ post, dayNight, animations }) {
     });
   }
 
-  // 右下角圆球形设置按钮
   const orbBtn = document.createElement('button');
   orbBtn.type = 'button';
   orbBtn.className = 'torii-orb-btn';
