@@ -1,19 +1,20 @@
-// 四阶段二维浅水方程（2D Shallow Water Equations / Wave PDE on GPU Texture）与深度折射管线
+// 四阶段二维浅水方程（2D Shallow Water Equations / Wave PDE on GPU Texture）+ 斯涅尔折射深度通道 + 实时平面/光追反射通道
 //
 // 阶段一：搭建物理模拟管线（SWE on GPU Ping-Pong FBO Texture）
 //   - 双缓冲浮点纹理（WebGLRenderTarget HalfFloatType, 128x256）：
 //     * R 通道 = 当前水高扰动 h(x, z, t)
 //     * G 通道 = 旧水高 h(x, z, t - dt)
 //     * B 通道 = 地形/溪石障碍物掩码（0 = 水域，1 = 石块/岸壁障碍物）
-//     * A 通道 = 流速/动量变化率与湍流涡度能量
+//     * A 通道 = 流速/动量变化率与绕石尾流涡度能量
 //   - 模拟着色器（SWE_SIM_FS）：基于拉普拉斯算子与顺流平流项求解浅水波动方程；
-//     遇障碍物（B > 0.5）强制反射波能并将法向速度置零，实现水流绕石碰撞、弓形激波与背水尾流；
+//     遇障碍物（B > 0.5）强制反射波能并在迎水侧抬升真实三维驻波（Bow Wave），背水侧生成涡街凹槽；
 //   - 交互输入机制：接收射线命中点，在纹理上写入瞬时高斯水高增量激起动态交互波纹。
 //
-// 阶段三：深度图与折射缓冲通道（Depth Buffer & Refraction Pass）
-//   - 在渲染水面之前，先隐藏水面网格，将河床（streamBed）、水中鹅卵石、沉叶与溪石（streamStones）
-//     渲染到带 THREE.DepthTexture 的离屏缓冲（refractionTarget），供水面片元着色器计算真实水深
-//     waterDepth = sceneDepth - waterSurfaceDepth、屏幕空间折射采样与岸边撞石泡沫。
+// 阶段三：水底折射深度通道（Refraction & Depth Pass）与实时倒影反射通道（Planar Reflection Pass）
+//   - 折射通道（refractionTarget）：隐藏水面，将河床泥沙（streamBed）、水中鹅卵石、沉叶与溪石（streamStones）
+//     连同真实树冠阴影渲染到带 THREE.DepthTexture 的离屏缓冲，供水面按波浪法线进行斯涅尔折射采样，清澈见底；
+//   - 反射通道（reflectionTarget）：构建关于山涧斜面镜像对称的反射相机（reflectionCamera），实时渲染上方的
+//     翠绿树冠与远处的朱红色明神鸟居到离屏纹理，供水面结合波浪法线与 3D 光追产生波光粼粼的真实倒影。
 import * as THREE from 'three';
 import {
   CONTENT_HALF,
@@ -75,7 +76,7 @@ export const SWE_SIM_FS = /* glsl */ `
     }
 
     // 顺流平流采样（沿溪流切向推进）
-    vec2 advectUv = vUv - vec2( 0.0, uTexelSize.y * 0.36 );
+    vec2 advectUv = vUv - vec2( 0.0, uTexelSize.y * 0.42 );
     vec4 center = texture2D( uStateTex, advectUv );
     float hCurr = center.r;
     float hPrev = center.g;
@@ -93,26 +94,35 @@ export const SWE_SIM_FS = /* glsl */ `
     float oE = texture2D( uObstacleTex, vUv + dx ).b;
     float oW = texture2D( uObstacleTex, vUv - dx ).b;
 
-    // 诺伊曼障碍物反射边界：碰撞石头（B > 0.5）时波浪反射并在迎水侧抬升弓形波
-    float hN = oN > 0.5 ? hCurr * 0.96 + 0.0032 : nSample.r;
-    float hS = oS > 0.5 ? hCurr * 0.92 - 0.0024 : sSample.r;
-    float hE = oE > 0.5 ? hCurr * 0.94 : eSample.r;
-    float hW = oW > 0.5 ? hCurr * 0.94 : wSample.r;
+    // 诺伊曼障碍物反射边界：碰撞石头（B > 0.5）时波浪反射并在迎水侧抬升真实涌浪，背水侧下陷
+    float hN = oN > 0.5 ? hCurr * 0.96 + 0.0055 : nSample.r;
+    float hS = oS > 0.5 ? hCurr * 0.92 - 0.0042 : sSample.r;
+    float hE = oE > 0.5 ? hCurr * 0.94 + 0.0020 : eSample.r;
+    float hW = oW > 0.5 ? hCurr * 0.94 + 0.0020 : wSample.r;
 
     float neighborAvg = ( hN + hS + hE + hW ) * 0.25;
     float velocity = ( hCurr - hPrev ) * uDamping + ( neighborAvg - hCurr ) * uWaveSpeed;
     float hNext = ( hCurr + velocity ) * uDamping;
 
-    // 瀑布跌水与石块背水侧卡门涡街持续激励
+    // 瀑布跌水与石块背水侧卡门涡街持续三维波浪激励
     vec2 worldXZ = uvToWorld( vUv );
     float nearObstacle = clamp( oN + oS + oE + oW, 0.0, 1.0 );
-    float wakeSource = sin( worldXZ.y * 9.2 - uTime * 6.4 + worldXZ.x * 6.8 ) * 0.0020 * nearObstacle;
+    float wakeSource = (
+      sin( worldXZ.y * 8.5 - uTime * 5.8 + worldXZ.x * 6.2 ) * 0.65 +
+      cos( worldXZ.y * 13.4 - uTime * 8.1 - worldXZ.x * 9.1 ) * 0.35
+    ) * 0.0042 * nearObstacle;
     float cascadeWave = (
-      sin( worldXZ.x * 10.5 + worldXZ.y * 5.8 - uTime * 8.2 ) * 0.6 +
-      cos( worldXZ.x * 16.0 - worldXZ.y * 7.6 - uTime * 10.8 ) * 0.4
-    ) * 0.0036 * cascadeSource;
+      sin( worldXZ.x * 9.5 + worldXZ.y * 5.4 - uTime * 7.6 ) * 0.6 +
+      cos( worldXZ.x * 14.8 - worldXZ.y * 7.2 - uTime * 10.2 ) * 0.4
+    ) * 0.0058 * cascadeSource;
 
-    hNext += wakeSource + cascadeWave;
+    // 连续山涧行波注入（保证全流域具备自然高低起伏的波峰与波谷）
+    float streamWave = (
+      sin( worldXZ.y * 4.2 - uTime * 4.6 + sin( worldXZ.x * 2.8 ) * 0.9 ) * 0.0018 +
+      cos( worldXZ.x * 5.6 + worldXZ.y * 3.1 - uTime * 3.8 ) * 0.0012
+    );
+
+    hNext += wakeSource + cascadeWave + streamWave;
 
     // 指针射线交互波纹注入
     if ( uImpulse.z > 0.0001 ) {
@@ -123,12 +133,12 @@ export const SWE_SIM_FS = /* glsl */ `
       }
     }
 
-    hNext = clamp( hNext, -0.042, 0.042 );
+    hNext = clamp( hNext, -0.065, 0.065 );
 
-    // A 通道：记录流速变化率与障碍物激荡强度，驱动岸边与撞石泡沫
-    float gradMag = length( vec2( hE - hW, hN - hS ) ) * 18.0;
+    // A 通道：仅在紧贴石头接触圈（nearObstacle）与瀑布落水口记录激荡强度，绝不涂抹全河道
+    float gradMag = length( vec2( hE - hW, hN - hS ) ) * 16.0;
     float agitation = clamp(
-      abs( hNext - hCurr ) * 40.0 + gradMag * 0.62 + nearObstacle * 0.52 + cascadeSource * 0.58,
+      nearObstacle * 0.72 + cascadeSource * 0.68 + gradMag * 0.35,
       0.0,
       1.0
     );
@@ -153,8 +163,8 @@ export function buildSweInitialTextures() {
     let casFactor = 0;
     for (const cas of STREAM_CASCADES) {
       const dz = Math.abs(z - cas.z);
-      if (dz < cas.halfSpan * 1.45) {
-        const w = 1 - dz / (cas.halfSpan * 1.45);
+      if (dz < cas.halfSpan * 1.35) {
+        const w = 1 - dz / (cas.halfSpan * 1.35);
         casFactor = Math.max(casFactor, w * w);
       }
     }
@@ -172,24 +182,24 @@ export function buildSweInitialTextures() {
         const d = Math.hypot(x - ob.x, z - ob.z);
         if (d < ob.r * 0.92) {
           isObstacle = 1.0;
-        } else if (d < ob.r * 1.65) {
-          stoneProx = Math.max(stoneProx, 1 - (d - ob.r * 0.92) / (ob.r * 0.73));
+        } else if (d < ob.r * 1.45) {
+          stoneProx = Math.max(stoneProx, 1 - (d - ob.r * 0.92) / (ob.r * 0.53));
         }
       }
 
       const initWave = isObstacle > 0.5
         ? 0
-        : (Math.sin(z * 4.2 + x * 3.1) * 0.003 + Math.cos(z * 7.5 - x * 5.2) * 0.002) * (1 + casFactor * 0.8);
+        : (Math.sin(z * 4.2 + x * 3.1) * 0.012 + Math.cos(z * 7.5 - x * 5.2) * 0.008) * (1 + casFactor * 0.8);
 
       stateData[idx] = initWave;
-      stateData[idx + 1] = initWave * 0.96;
+      stateData[idx + 1] = initWave * 0.92;
       stateData[idx + 2] = isObstacle;
       stateData[idx + 3] = isObstacle > 0.5 ? 0 : Math.min(1, casFactor * 0.65 + stoneProx * 0.55);
 
       obstacleData[idx] = 0;
       obstacleData[idx + 1] = 0;
       obstacleData[idx + 2] = isObstacle;
-      obstacleData[idx + 3] = Math.min(1, casFactor * 0.85 + stoneProx * 0.45);
+      obstacleData[idx + 3] = Math.min(1, casFactor * 0.75 + stoneProx * 0.45);
     }
   }
 
@@ -235,7 +245,7 @@ export function getSweSimulator() {
   let rtB = new THREE.WebGLRenderTarget(SWE_TEX_WIDTH, SWE_TEX_HEIGHT, rtOpts);
   let initializedOnGpu = false;
 
-  // 阶段三：河床深度与折射离屏缓冲（Depth Buffer & Refraction Capture Target）
+  // 1) 河床深度与折射离屏缓冲（Refraction & Depth Capture Target）
   let refractionTarget = new THREE.WebGLRenderTarget(512, 512, {
     format: THREE.RGBAFormat,
     type: THREE.HalfFloatType,
@@ -247,6 +257,25 @@ export function getSweSimulator() {
   refractionTarget.depthTexture.format = THREE.DepthFormat;
   refractionTarget.depthTexture.type = THREE.UnsignedIntType;
 
+  // 2) 实时水面镜面反射离屏缓冲（Planar Reflection Capture Target：捕捉上方翠绿树冠与朱红鸟居倒影）
+  let reflectionTarget = new THREE.WebGLRenderTarget(512, 512, {
+    format: THREE.RGBAFormat,
+    type: THREE.HalfFloatType,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthBuffer: true
+  });
+  const reflectionCamera = new THREE.PerspectiveCamera(45, 1, 0.1, 420);
+  const planePoint = new THREE.Vector3(-3.1, 1.45, 2.5);
+  const planeNormal = new THREE.Vector3(0.06, 0.985, 0.16).normalize();
+  const camPos = new THREE.Vector3();
+  const camTarget = new THREE.Vector3();
+  const camFwd = new THREE.Vector3();
+  const camUp = new THREE.Vector3();
+  const reflPos = new THREE.Vector3();
+  const reflTarget = new THREE.Vector3();
+  const reflUp = new THREE.Vector3();
+
   const simCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const simGeo = new THREE.PlaneGeometry(2, 2);
   const simUniforms = {
@@ -256,10 +285,10 @@ export function getSweSimulator() {
     uDomainMin: { value: domainMin },
     uDomainMax: { value: domainMax },
     uTime: { value: 0 },
-    uDamping: { value: 0.985 },
-    uWaveSpeed: { value: 1.65 },
+    uDamping: { value: 0.986 },
+    uWaveSpeed: { value: 1.72 },
     uImpulse: { value: new THREE.Vector3(0, 0, 0) },
-    uImpulseRadius: { value: 0.42 }
+    uImpulseRadius: { value: 0.45 }
   };
 
   const simMat = new THREE.ShaderMaterial({
@@ -276,27 +305,41 @@ export function getSweSimulator() {
 
   let currentTexture = stateTex;
   let refractionReady = false;
+  let reflectionReady = false;
 
-  function addDrop(worldX, worldZ, strength = 0.018, radius = 0.42) {
+  function addDrop(worldX, worldZ, strength = 0.024, radius = 0.45) {
     simUniforms.uImpulse.value.set(worldX, worldZ, strength);
     simUniforms.uImpulseRadius.value = radius;
   }
 
   function resizeRefraction(w, h) {
-    const rw = Math.max(64, Math.floor(w * 0.5));
-    const rh = Math.max(64, Math.floor(h * 0.5));
-    if (refractionTarget.width === rw && refractionTarget.height === rh) return;
-    refractionTarget.dispose();
-    refractionTarget = new THREE.WebGLRenderTarget(rw, rh, {
-      format: THREE.RGBAFormat,
-      type: THREE.HalfFloatType,
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      depthBuffer: true
-    });
-    refractionTarget.depthTexture = new THREE.DepthTexture(rw, rh);
-    refractionTarget.depthTexture.format = THREE.DepthFormat;
-    refractionTarget.depthTexture.type = THREE.UnsignedIntType;
+    const rw = Math.max(128, Math.floor(w * 0.75));
+    const rh = Math.max(128, Math.floor(h * 0.75));
+    if (refractionTarget.width !== rw || refractionTarget.height !== rh) {
+      refractionTarget.dispose();
+      refractionTarget = new THREE.WebGLRenderTarget(rw, rh, {
+        format: THREE.RGBAFormat,
+        type: THREE.HalfFloatType,
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        depthBuffer: true
+      });
+      refractionTarget.depthTexture = new THREE.DepthTexture(rw, rh);
+      refractionTarget.depthTexture.format = THREE.DepthFormat;
+      refractionTarget.depthTexture.type = THREE.UnsignedIntType;
+    }
+    const refW = Math.max(128, Math.floor(w * 0.5));
+    const refH = Math.max(128, Math.floor(h * 0.5));
+    if (reflectionTarget.width !== refW || reflectionTarget.height !== refH) {
+      reflectionTarget.dispose();
+      reflectionTarget = new THREE.WebGLRenderTarget(refW, refH, {
+        format: THREE.RGBAFormat,
+        type: THREE.HalfFloatType,
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        depthBuffer: true
+      });
+    }
   }
 
   function step(renderer, time) {
@@ -330,18 +373,70 @@ export function getSweSimulator() {
   function captureRefraction(renderer, scene, camera) {
     if (!renderer || !scene || !camera) return false;
     const waterRoot = scene.getObjectByName('streamWater');
-    const wasVisible = waterRoot ? waterRoot.visible : true;
+    const puddleRoot = scene.getObjectByName('puddle');
+    const terrainRoot = scene.getObjectByName('terrain');
+    const padRoot = scene.getObjectByName('basePad');
+    const wasWaterVis = waterRoot ? waterRoot.visible : true;
+    const wasPuddleVis = puddleRoot ? puddleRoot.visible : true;
     const prevTarget = renderer.getRenderTarget ? renderer.getRenderTarget() : null;
     try {
+      // 1) 渲染水下河床、卵石、沉叶与溪石折射及真实深度纹理（隐藏水面本身）
       if (waterRoot) waterRoot.visible = false;
+      if (puddleRoot) puddleRoot.visible = false;
       renderer.setRenderTarget(refractionTarget);
       renderer.clear();
       renderer.render(scene, camera);
       refractionReady = true;
+
+      // 2) 渲染溪流斜面镜面反射缓冲（捕捉上方树冠与朱红鸟居倒影）
+      camPos.setFromMatrixPosition(camera.matrixWorld);
+      const e = camera.matrixWorld.elements;
+      camFwd.set(-e[8], -e[9], -e[10]).normalize();
+      camUp.set(e[4], e[5], e[6]).normalize();
+      camTarget.copy(camPos).addScaledVector(camFwd, 12.0);
+
+      // 以当前视角注视段的水面高度作为反射基准面
+      const midZ = THREE.MathUtils.clamp(camPos.z * 0.45, -6.0, 10.5);
+      planePoint.set(streamCenterX(midZ), waterY(midZ), midZ);
+
+      const dPos = reflPos.copy(camPos).sub(planePoint).dot(planeNormal);
+      reflPos.copy(camPos).addScaledVector(planeNormal, -2 * dPos);
+
+      const dTgt = reflTarget.copy(camTarget).sub(planePoint).dot(planeNormal);
+      reflTarget.copy(camTarget).addScaledVector(planeNormal, -2 * dTgt);
+
+      const dUp = camUp.dot(planeNormal);
+      reflUp.copy(camUp).addScaledVector(planeNormal, -2 * dUp).normalize();
+
+      reflectionCamera.fov = camera.fov;
+      reflectionCamera.aspect = camera.aspect || 1.77;
+      reflectionCamera.near = camera.near;
+      reflectionCamera.far = camera.far;
+      reflectionCamera.position.copy(reflPos);
+      reflectionCamera.up.copy(reflUp);
+      reflectionCamera.lookAt(reflTarget);
+      reflectionCamera.updateMatrixWorld(true);
+      reflectionCamera.updateProjectionMatrix();
+
+      // 隐藏地形底壳与底座，防止水下背面遮挡反射相机视线，让反射相机直接拍到上方树木与朱红鸟居
+      const wasTerrainVis = terrainRoot ? terrainRoot.visible : true;
+      const wasPadVis = padRoot ? padRoot.visible : true;
+      if (terrainRoot) terrainRoot.visible = false;
+      if (padRoot) padRoot.visible = false;
+
+      renderer.setRenderTarget(reflectionTarget);
+      renderer.clear();
+      renderer.render(scene, reflectionCamera);
+      reflectionReady = true;
+
+      if (terrainRoot) terrainRoot.visible = wasTerrainVis;
+      if (padRoot) padRoot.visible = wasPadVis;
     } catch (_e) {
       refractionReady = false;
+      reflectionReady = false;
     } finally {
-      if (waterRoot) waterRoot.visible = wasVisible;
+      if (waterRoot) waterRoot.visible = wasWaterVis;
+      if (puddleRoot) puddleRoot.visible = wasPuddleVis;
       renderer.setRenderTarget(prevTarget);
     }
     return refractionReady;
@@ -357,8 +452,14 @@ export function getSweSimulator() {
     get refractionDepthTex() {
       return refractionTarget.depthTexture;
     },
+    get reflectionColorTex() {
+      return reflectionTarget.texture;
+    },
     get hasRefraction() {
       return refractionReady;
+    },
+    get hasReflection() {
+      return reflectionReady;
     },
     obstacleTex,
     domainMin,

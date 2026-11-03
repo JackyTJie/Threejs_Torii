@@ -86,9 +86,14 @@ export function createWetRock(M) {
     hostY0 = Math.min(hostY0, ground - HOST_Y_SINK);
     hostY1 = Math.max(hostY1, top + HOST_Y_RISE);
 
-    // 1. 主节理山石（顶面锁定为 ground + r * 1.2）
+    // 1. 主节理山石（顶面锁定为 ground + r * 1.2；约半数湿石采用覆苔山石材质 M.stoneRockMossy）
     const geo = rockGeometry(r, seed, MAIN_STONE_SHAPE);
-    const mainMat = wet ? M.stoneRockWet : (index % 2 === 0 ? M.stoneRock : stratMat);
+    const mossyMat = M.stoneRockMossy || M.stoneRockWet;
+    const mainMat = index % 2 === 0
+      ? mossyMat
+      : wet
+        ? M.stoneRockWet
+        : (index % 3 === 0 ? stratMat : M.stoneRock);
     const rock = seatRock(geo, mainMat, `wetRock-${index + 1}`, x, z, top, rand, STONE_TILE, 0.24);
     root.add(rock);
     meshCount += 1;

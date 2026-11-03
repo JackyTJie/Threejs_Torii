@@ -124,7 +124,8 @@ function buildLeftCurbWall(M, rand) {
       flatten: 0.48
     });
     triplanarUv(geo, 0.7);
-    const mat = idx % 3 === 0 ? M.mossStone : idx % 2 === 0 ? M.stoneRockWet : M.stoneStepLower;
+    const mossyMat = M.stoneRockMossy || M.stoneRockWet;
+    const mat = idx % 3 === 0 ? mossyMat : idx % 2 === 0 ? M.stoneRockWet : M.stoneStepLower;
     const stone = mesh(geo, mat, `streamCobble-${idx + 1}`);
     const gy = terrainHeight(cx, cz);
     place(stone, { x: cx, y: gy + r * 0.16, z: cz, ry: rand() * Math.PI });

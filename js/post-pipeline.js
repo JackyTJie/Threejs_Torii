@@ -226,7 +226,9 @@ export function createPostPipeline(renderer, scene, camera) {
         tuneMaterial(mat, 'uSweTex', sweTex);
         tuneMaterial(mat, 'tRefractionColor', swe.refractionColorTex);
         tuneMaterial(mat, 'tRefractionDepth', swe.refractionDepthTex);
+        tuneMaterial(mat, 'tReflectionColor', swe.reflectionColorTex);
         tuneMaterial(mat, 'uHasRefraction', hasRefract ? 1.0 : 0.0);
+        tuneMaterial(mat, 'uHasReflection', swe.hasReflection ? 1.0 : 0.0);
         tuneMaterial(mat, 'uCameraNear', camera.near);
         tuneMaterial(mat, 'uCameraFar', camera.far);
       }

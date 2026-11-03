@@ -55,18 +55,48 @@ export const MOSS_ATTACHMENT_UNIFORMS = /* glsl */ `
 `;
 
 export const MOSS_ATTACHMENT_FRAG = /* glsl */ `
-  float mossNoise( vec3 p ) {
-    return fract( sin( dot( floor( p * 9.0 ), vec3( 12.9898, 78.233, 45.164 ) ) ) * 43758.5453 );
+  float mossHash( vec3 p ) {
+    p = fract( p * vec3( 12.9898, 78.233, 45.164 ) );
+    p += dot( p, p.yzx + 19.19 );
+    return fract( ( p.x + p.y ) * p.z );
   }
 
-  // sunDir = 光子行进方向（太阳 → 场景）。面朝太阳的表面满足 dot( normal, -sunDir ) > 0，
-  // 因此「背阴度」= 0.5 + 0.5·dot( normal, sunDir )：顶面 ≈0.23（少苔）、底面 ≈0.77（多苔）。
+  float mossNoise3( vec3 p ) {
+    vec3 i = floor( p );
+    vec3 f = fract( p );
+    f = f * f * ( 3.0 - 2.0 * f );
+    return mix(
+      mix(
+        mix( mossHash( i ), mossHash( i + vec3( 1.0, 0.0, 0.0 ) ), f.x ),
+        mix( mossHash( i + vec3( 0.0, 1.0, 0.0 ) ), mossHash( i + vec3( 1.0, 1.0, 0.0 ) ), f.x ),
+        f.y
+      ),
+      mix(
+        mix( mossHash( i + vec3( 0.0, 0.0, 1.0 ) ), mossHash( i + vec3( 1.0, 0.0, 1.0 ) ), f.x ),
+        mix( mossHash( i + vec3( 0.0, 1.0, 1.0 ) ), mossHash( i + vec3( 1.0, 1.0, 1.0 ) ), f.x ),
+        f.y
+      ),
+      f.z
+    );
+  }
+
+  // 同时支持构件根部微润青苔与山石顶面折平台自然青苔斑块（绝不把整块石头刷成绿球，侧面劈理折面保持干净山石本色）
   vec3 applyMoss( vec3 baseColor, vec3 worldPos, vec3 normal, vec3 sunDir ) {
+    vec3 nrm = normalize( normal );
     float heightFade = 1.0 - clamp( ( worldPos.y - uMossHeight ) / max( uMossBand, 0.001 ), 0.0, 1.0 );
-    float shade = clamp( 0.5 + 0.5 * dot( normal, sunDir ), 0.0, 1.0 );
-    float n = mossNoise( worldPos );
-    float mask = clamp( heightFade * ( 0.45 + 0.55 * shade ) * ( 0.55 + 0.75 * n ) * uMossAmount, 0.0, 1.0 );
-    return mix( baseColor, uMossColor, mask );
+    float shade = clamp( 0.5 + 0.5 * dot( nrm, sunDir ), 0.0, 1.0 );
+    float n1 = mossNoise3( worldPos * 4.2 );
+    float n2 = mossNoise3( worldPos * 10.5 + vec3( 7.3, 2.1, 5.4 ) );
+    float organic = n1 * 0.65 + n2 * 0.35;
+
+    // 仅在朝上的岩石平台面（nrm.y > 0.48）生成团簇状青苔垫，立面与斜劈理面露出干净岩石纹理
+    float topFacing = smoothstep( 0.48, 0.82, nrm.y );
+    float topPatch = smoothstep( 0.46, 0.72, organic + topFacing * 0.16 ) * topFacing;
+    float baseMask = heightFade * ( 0.35 + 0.45 * shade ) * smoothstep( 0.45, 0.75, organic ) * 0.45;
+    float mask = clamp( max( baseMask, topPatch * 0.85 ) * uMossAmount, 0.0, 0.72 );
+
+    vec3 lushMoss = mix( uMossColor * 0.78, uMossColor * vec3( 1.08, 1.16, 0.92 ), clamp( nrm.y * 0.5 + organic * 0.5, 0.0, 1.0 ) );
+    return mix( baseColor, lushMoss, mask );
   }
 `;
 

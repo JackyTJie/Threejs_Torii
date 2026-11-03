@@ -57,6 +57,7 @@ export function createStreamStones(M) {
   let meshCount = 0;
 
   const rockMats = [
+    M.stoneRockMossy || M.stoneRockWet,
     M.stoneRockWet,
     M.stoneRockStratified || M.stoneRock,
     M.stoneStream,
@@ -71,9 +72,13 @@ export function createStreamStones(M) {
     const wy = waterY(z);
     const mainTop = stoneTop(x, z, r);
 
-    // 1. 主劈理大石（顶面精确对齐 stoneTop）
+    // 1. 主劈理大石（顶面精确对齐 stoneTop；半数主石使用覆苔山石材质 M.stoneRockMossy）
     const mainGeo = rockGeometry(r, seed, MAIN_STONE_SHAPE);
-    const mainMat = index % 3 === 0 ? (M.stoneRockStratified || M.stoneRockWet) : M.stoneRockWet;
+    const mainMat = index % 2 === 0
+      ? (M.stoneRockMossy || M.stoneRockWet)
+      : index % 3 === 0
+        ? (M.stoneRockStratified || M.stoneRockWet)
+        : M.stoneRockWet;
     const mainStone = seatRock(mainGeo, mainMat, `streamStone-${index + 1}`, x, z, mainTop, rand, true);
     root.add(mainStone);
     meshCount += 1;
@@ -89,10 +94,12 @@ export function createStreamStones(M) {
       const fz = z + Math.sin(ang) * dist;
       const fTop = ground + r * (0.62 + rand() * 0.32);
       const fGeo = rockGeometry(fr, seed * 19 + f * 37, FLANK_STONE_SHAPE);
-      const fMat = rockMats[(index + f + 1) % rockMats.length];
+      const fMat = rockMats[(index + f) % rockMats.length];
       const flank = seatRock(fGeo, fMat, `streamStone-flank-${index + 1}-${f + 1}`, fx, fz, fTop, rand, true);
       flank.rotation.x = (rand() - 0.5) * 0.22;
       flank.rotation.z = (rand() - 0.5) * 0.22;
+      // 浸没在水面附近的矮副石不加黑边壳体，避免水中出现孤立黑线圈
+      if (fTop <= waterY(fz) + 0.04) flank.userData.noOutline = true;
       root.add(flank);
       meshCount += 1;
     }
@@ -111,25 +118,28 @@ export function createStreamStones(M) {
       place(ledge, { x: lx, y: ledgeY, z: lz, ry: rand() * Math.PI * 2 });
       ledge.rotation.x = (rand() - 0.5) * 0.12;
       ledge.rotation.z = (rand() - 0.5) * 0.12;
+      ledge.userData.noOutline = true;
       root.add(ledge);
       meshCount += 1;
     }
 
-    // 4. 迎水石窝与背水尾流区的棱角溪石与碎石片（6~8 颗）
+    // 4. 迎水石窝与背水尾流区的棱角溪石与碎石片（6~8 颗，全部浸泡于水中或贴近水线，不加黑边壳体以展现清澈水底实石质感）
     const cobbleCount = 6 + (index % 3);
     for (let i = 0; i < cobbleCount; i += 1) {
       const isChip = i >= 4;
-      const gr = r * (isChip ? 0.14 + rand() * 0.10 : 0.22 + rand() * 0.15);
+      const gr = r * (isChip ? 0.15 + rand() * 0.10 : 0.24 + rand() * 0.15);
       const az = rand() * Math.PI * 2;
       const dist = r * (0.78 + rand() * 0.68);
       const gx = x + Math.cos(az) * dist;
       const gz = z + Math.sin(az) * dist;
       const gGround = terrainHeight(gx, gz);
       const gGeo = rockGeometry(gr, seed * 29 + i * 13, isChip ? CHIP_SHAPE : COBBLE_SHAPE);
-      const gMat = isChip ? (M.stoneChip || M.stonePebble) : (i % 2 === 0 ? M.stoneStream : M.stoneRock);
+      const gMat = isChip
+        ? (M.stoneChip || M.stonePebble)
+        : (i % 3 === 0 ? (M.stoneRockStratified || M.stoneStream) : i % 2 === 0 ? M.stoneStream : M.stoneRock);
       const topTarget = i < 2
-        ? wy + 0.018 + rand() * 0.025
-        : Math.min(waterY(gz) - 0.015, gGround + 0.045 + rand() * 0.03);
+        ? wy + 0.012 + rand() * 0.022
+        : Math.min(waterY(gz) - 0.012, gGround + 0.048 + rand() * 0.032);
       const cobble = seatRock(
         gGeo,
         gMat,
@@ -143,7 +153,7 @@ export function createStreamStones(M) {
       cobble.rotation.x = (rand() - 0.5) * 0.25;
       cobble.rotation.z = (rand() - 0.5) * 0.25;
       cobble.userData.noCast = isChip;
-      cobble.userData.noOutline = isChip;
+      cobble.userData.noOutline = true;
       root.add(cobble);
       meshCount += 1;
     }

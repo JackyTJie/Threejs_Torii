@@ -64,7 +64,7 @@ export function outlineMaterial(key = 'default', options = {}) {
       uOpacity: { value: opacity }
     },
     side: THREE.BackSide,
-    transparent: true,
+    transparent: false,
     depthWrite: true
   });
   material.name = `outline-${key}-${cap.toFixed(5)}`;

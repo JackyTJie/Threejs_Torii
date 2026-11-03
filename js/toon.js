@@ -154,7 +154,9 @@ export function applyShadowLift(material, { lift = 0.14, knee = 0.42 } = {}) {
     injectSurface(shader, `{
         float l = dot( outgoingLight, vec3( 0.2126, 0.7152, 0.0722 ) );
         float k = 1.0 - smoothstep( uShadowKnee * 0.35, uShadowKnee, l );
-        outgoingLight += outgoingLight * k * uShadowLift + vec3( 0.012, 0.010, 0.008 ) * k;
+        float skyFacing = clamp( normal.y * 0.5 + 0.5, 0.15, 1.0 );
+        vec3 baseFloor = diffuseColor.rgb * ( 0.065 + 0.075 * skyFacing ) * ( uShadowLift * 2.4 );
+        outgoingLight += ( outgoingLight * uShadowLift + baseFloor + vec3( 0.014, 0.016, 0.014 ) ) * k;
       }`);
     material.userData.shader = shader;
   });
@@ -234,6 +236,7 @@ export function applySubmergedCaustics(material) {
 
 export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength = 1, overlayMode = 0 } = {}) {
   const sim = getSweSimulator();
+  const sun = sunDirectionVector();
   const uniforms = bindUniforms(material, {
     uTime: { value: 0 },
     uFlowSpeed: { value: speed },
@@ -243,18 +246,21 @@ export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength
     uFlowScale: { value: scale },
     uFlowStrength: { value: strength },
     uOverlayMode: { value: overlayMode },
+    uWaterSunDir: { value: sun.clone() },
     uSweTex: { value: sim.texture },
     uSweDomainMin: { value: new THREE.Vector2(SWE_DOMAIN.xMin, SWE_DOMAIN.zMin) },
     uSweDomainMax: { value: new THREE.Vector2(SWE_DOMAIN.xMax, SWE_DOMAIN.zMax) },
     uSweTexel: { value: new THREE.Vector2(1 / SWE_TEX_WIDTH, 1 / SWE_TEX_HEIGHT) },
-    uSweDisplaceScale: { value: overlayMode === 0 ? 1.15 : 0.0 },
+    uSweDisplaceScale: { value: overlayMode === 0 ? 1.35 : 0.0 },
     tRefractionColor: { value: sim.refractionColorTex },
     tRefractionDepth: { value: sim.refractionDepthTex },
+    tReflectionColor: { value: sim.reflectionColorTex },
     uHasRefraction: { value: 0.0 },
+    uHasReflection: { value: 0.0 },
     uCameraNear: { value: CAMERA.near },
     uCameraFar: { value: CAMERA.far },
-    uExtinctionDensity: { value: 3.2 },
-    uShoreFoamThreshold: { value: 0.052 }
+    uExtinctionDensity: { value: 2.8 },
+    uShoreFoamThreshold: { value: 0.048 }
   });
   composeBeforeCompile(material, (shader) => {
     Object.assign(shader.uniforms, uniforms);
@@ -279,7 +285,9 @@ export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength
     injectGlobals(shader, `${WATER_FLOW_UNIFORMS}\n${WATER_FLOW_FRAG}`);
     injectSurface(shader, `{
         vec3 waterViewDirV = normalize( vViewPosition );
-        vec4 waterFlowOut = waterFlow( outgoingLight, diffuseColor.a, vStationWorldPos, normal, waterViewDirV, vWaterLocalUv );
+        float litLuma = dot( outgoingLight, vec3( 0.299, 0.587, 0.114 ) );
+        float waterShadowMask = clamp( smoothstep( 0.03, 0.22, litLuma ), 0.15, 1.0 );
+        vec4 waterFlowOut = waterFlow( outgoingLight, diffuseColor.a, vStationWorldPos, normal, waterViewDirV, vWaterLocalUv, waterShadowMask );
         outgoingLight = waterFlowOut.rgb;
         diffuseColor.a = waterFlowOut.a;
       }`);

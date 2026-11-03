@@ -1,10 +1,11 @@
-// 山涧蜿蜒叠瀑溪流（二维浅水方程 SWE 高密度位移网格 + 深度折射透底 + 实时水底焦散 + 多层次咬合叠石堰）：
-// 1) 高密度浅水方程水面网格（WATER_COLS = 25, SAMPLE_PITCH = 0.09）：
-//    在顶点着色器采样 SWE 模拟纹理（uSweTex.r）做真实 Y 轴波浪位移，并由中心差分实时计算法线；
-// 2) 移除漂浮的白色椭球粒子（彻底消除怪异的白点反光），仅保留柔化羽化的 6 级小瀑布水帘与 SWE 实时浅水波纹；
-// 3) 全面升级溪床叠石堰与河床乱石（streamBed）：
-//    - 6 级小瀑布天然叠石堰升级为每级 9 块独立咬合岩石（两侧护岸劈理巨石 + 中间扁平锐棱堰唇石板 slabGeometry + 楔石，共 54 块堰石）；
-//    - 200 颗多面体棱角溪底卵石与扁平河砾 + 12 处冲刷砂砾滩 + 48 片沉水红叶。
+// 山涧蜿蜒叠瀑溪流（二维浅水方程 SWE + 三维 Gerstner 高密度起伏网格 + 斯涅尔折射透底 + 实时光追倒影 + 树影遮挡/阳光波光 + 随波起伏漂浮落叶）：
+// 1) 高密度三维动态起伏水面网格（WATER_COLS = 33, SAMPLE_PITCH = 0.065）：
+//    开启 receiveShadow = true 接收林冠树影，结合顶点着色器 SWE + Gerstner 三维位移与 CPU 逐帧复合波场；
+// 2) 溪面漂浮落叶系统（42 片独立建模的卷曲秋叶 streamWater-floatingLeaf-*）：
+//    含 24 片顺流漂动避石落叶（drift）与 18 片依附在溪石窝旁的回旋浮叶（eddy），逐帧采样三维波高与波面法线倾角随水起伏摇曳；
+// 3) 溪床多材质层次（streamBed）：
+//    金褐砂砾河床（soilStreamBed）+ 54 块交错叠石堰 + 200 颗多色阶棱角河石/浅色卵石 + 12 处冲刷砂洲 + 48 片水底沉叶；
+//    所有水下卵石与浸没堰唇石板一律标记 noOutline = true，彻底消除水中石头只剩黑边轮廓的视觉伪影。
 import * as THREE from 'three';
 import { group, leafSheetGeometry, mesh, place, rng, rockGeometry, slabGeometry, triplanarUv } from '../primitives.js';
 import {
@@ -23,14 +24,14 @@ import {
 
 const Z_START = -CONTENT_HALF;
 const Z_END = CONTENT_HALF;
-const SAMPLE_PITCH = 0.09;
+const SAMPLE_PITCH = 0.065;
 const SEARCH_STEP = 0.04;
 const SEARCH_OUTER = 2.4;
 const BISECT_ITER = 24;
 const MIN_WATER_WIDTH = 0.12;
 const RUN_GAP = 0.6;
 
-const WATER_COLS = 25;
+const WATER_COLS = 33;
 const WATER_RATIOS = [];
 for (let c = 0; c < WATER_COLS; c++) WATER_RATIOS.push(1 - (2 * c) / (WATER_COLS - 1));
 const WATER_UV_TILE = 2.2;
@@ -41,10 +42,12 @@ const MIN_LIFT = 0.005;
 const MIN_BED_WIDTH = 0.15;
 const BED_UV_TILE = 4;
 
-const PEBBLE_COUNT = 200;
+const PEBBLE_COUNT = 320;
 const PEBBLE_TILE = 0.16;
 const BAR_COUNT = 12;
 const SUNKEN_LEAF_COUNT = 48;
+const FLOATING_DRIFT_LEAVES = 24;
+const FLOATING_EDDY_LEAVES = 18;
 
 /* ------------------------------------------------------------------ 三维样条曲线与障碍物场 */
 
@@ -176,8 +179,8 @@ function measureStations() {
       wy,
       left,
       right,
-      bedLeft: bedlineEdge(cx, z, wy, half, -1),
-      bedRight: bedlineEdge(cx, z, wy, half, 1)
+      bedLeft: Math.min(left * 0.70, bedlineEdge(cx, z, wy, half, -1)),
+      bedRight: Math.min(right * 0.70, bedlineEdge(cx, z, wy, half, 1))
     });
   }
   measured = out;
@@ -293,14 +296,118 @@ function buildFeatheredCascadeSheets(root, M) {
 
     const curtain = mesh(geo, foamMat, `streamWater-cascade-${cIdx}`);
     curtain.castShadow = false;
-    curtain.receiveShadow = false;
+    curtain.receiveShadow = true;
+    curtain.renderOrder = 11;
     curtain.userData.noCast = true;
-    curtain.userData.noReceive = true;
+    curtain.userData.noReceive = false;
     curtain.userData.noOutline = true;
     curtain.userData.cascadeCurtain = { phase: cIdx * 1.7 };
     root.add(curtain);
     count += 1;
   });
+
+  return count;
+}
+
+/* ------------------------------------------------------------------ 溪面随波起伏与漂流落叶系统 */
+
+function buildFloatingStreamLeaves(root, M) {
+  const rand = rng(8629);
+  const curve = getStreamSplineCurve();
+  const obstacles = getStreamObstacles();
+
+  const mapleGeo = leafSheetGeometry({ kind: 'maple', size: 0.088, thickness: 0.0035, curl: 0.24, steps: 14 });
+  mapleGeo.rotateX(-Math.PI / 2);
+  const smallGeo = leafSheetGeometry({ kind: 'maple', size: 0.068, thickness: 0.003, curl: 0.20, steps: 12 });
+  smallGeo.rotateX(-Math.PI / 2);
+
+  const leafMats = [
+    M.leafSheetFloatingGold || M.leafSheetGroundLight,
+    M.leafSheetFloatingAmber || M.leafSheetGroundRust,
+    M.leafSheetFloatingCrimson || M.leafSheetGroundRust,
+    M.leafSheetFloatingGold || M.leafSheetGroundLight
+  ];
+
+  let count = 0;
+
+  // 1. 24 片顺流漂动、遇石绕行、随三维水波高低起伏与倾侧摇曳的浮叶
+  for (let i = 0; i < FLOATING_DRIFT_LEAVES; i++) {
+    const u = (i + rand() * 0.85) / FLOATING_DRIFT_LEAVES;
+    const pt = curve.getPointAt(u);
+    const half = Math.max(0.18, streamBankHalf(pt.z) * 0.58);
+    let lat = (rand() - 0.5) * 2 * half;
+    let x = pt.x + lat;
+    const z = pt.z;
+
+    for (const ob of obstacles) {
+      const d = Math.hypot(x - ob.x, z - ob.z);
+      if (d < ob.r + 0.08) {
+        const dir = x >= ob.x ? 1 : -1;
+        x = ob.x + dir * (ob.r + 0.1);
+        lat = x - pt.x;
+      }
+    }
+
+    const y = waterY(z) + 0.008;
+    const geo = i % 3 === 0 ? smallGeo : mapleGeo;
+    const mat = leafMats[i % leafMats.length];
+    const leaf = mesh(geo, mat, `streamWater-floatingLeaf-drift-${i}`);
+    const yaw = rand() * Math.PI * 2;
+    const scale = 0.82 + rand() * 0.42;
+    place(leaf, { x, y, z, ry: yaw, sx: scale, sy: 1, sz: scale });
+    leaf.castShadow = false;
+    leaf.receiveShadow = true;
+    leaf.renderOrder = 12;
+    leaf.userData.noCast = true;
+    leaf.userData.noOutline = true;
+    leaf.userData.floatingLeaf = {
+      mode: 'drift',
+      u,
+      lat,
+      vx: 0,
+      speed: 0.014 + rand() * 0.010,
+      yaw,
+      yawSpeed: (rand() - 0.5) * 0.85,
+      phase: rand() * Math.PI * 2
+    };
+    root.add(leaf);
+    count += 1;
+  }
+
+  // 2. 18 片聚集在溪石边缘与水湾处的回旋浮叶（对照参考图中紧贴石头旁随波起伏的黄叶）
+  for (let i = 0; i < FLOATING_EDDY_LEAVES; i++) {
+    const st = STREAM_STONES[i % STREAM_STONES.length];
+    const ang = rand() * Math.PI * 2;
+    const dist = st.r * (0.86 + rand() * 0.48);
+    const cx = streamCenterX(st.z);
+    const half = streamBankHalf(st.z) * 0.72;
+    const x = THREE.MathUtils.clamp(st.x + Math.cos(ang) * dist, cx - half, cx + half);
+    const z = THREE.MathUtils.clamp(st.z + Math.sin(ang) * dist, Z_START + 0.5, Z_END - 0.5);
+    const y = waterY(z) + 0.008;
+    const geo = i % 2 === 0 ? mapleGeo : smallGeo;
+    const mat = leafMats[(i + 1) % leafMats.length];
+    const leaf = mesh(geo, mat, `streamWater-floatingLeaf-eddy-${i}`);
+    const yaw = rand() * Math.PI * 2;
+    const scale = 0.78 + rand() * 0.38;
+    place(leaf, { x, y, z, ry: yaw, sx: scale, sy: 1, sz: scale });
+    leaf.castShadow = false;
+    leaf.receiveShadow = true;
+    leaf.renderOrder = 12;
+    leaf.userData.noCast = true;
+    leaf.userData.noOutline = true;
+    leaf.userData.floatingLeaf = {
+      mode: 'eddy',
+      anchorX: x,
+      anchorZ: z,
+      orbitR: 0.018 + rand() * 0.025,
+      orbitSpeed: (rand() < 0.5 ? 1 : -1) * (0.9 + rand() * 0.8),
+      yaw,
+      yawSpeed: (rand() - 0.5) * 0.55,
+      phase: rand() * Math.PI * 2
+    };
+    root.add(leaf);
+    count += 1;
+  }
 
   return count;
 }
@@ -329,7 +436,7 @@ function mouthGeometry(st) {
 }
 
 /**
- * 山涧水面（高密度 SWE 浅水方程位移网格 + 柔化羽化瀑布水舌，无怪异漂浮白点粒子）。
+ * 山涧水面（高密度三维起伏网格 + 真实树影接收 + 斯涅尔折射透底 + 鸟居/树冠光追倒影 + 42 片随水起伏浮叶）。
  */
 export function createStreamWater(M) {
   const root = group('streamWater');
@@ -349,9 +456,10 @@ export function createStreamWater(M) {
 
     const sheet = mesh(geo, M.waterSurface, `streamWater-surface-${runIndex}`);
     sheet.castShadow = false;
-    sheet.receiveShadow = false;
+    sheet.receiveShadow = true;
+    sheet.renderOrder = 10;
     sheet.userData.noCast = true;
-    sheet.userData.noReceive = true;
+    sheet.userData.noReceive = false;
     sheet.userData.noOutline = true;
     sheet.userData.waterSurface = true;
     sheet.userData.waterColumns = WATER_COLS;
@@ -359,7 +467,7 @@ export function createStreamWater(M) {
     root.add(sheet);
     meshCount += 1;
 
-    for (let i = 0; i < run.length; i += 8) {
+    for (let i = 0; i < run.length; i += 10) {
       samples.push({ x: run[i].cx, y: run[i].wy, z: run[i].z });
     }
 
@@ -367,16 +475,17 @@ export function createStreamWater(M) {
     if (last.z >= Z_END - 1e-6) {
       const cap = mesh(mouthGeometry(last), M.waterSurface, 'streamWater-mouth');
       cap.castShadow = false;
-      cap.receiveShadow = false;
+      cap.receiveShadow = true;
+      cap.renderOrder = 10;
       cap.userData.noCast = true;
-      cap.userData.noReceive = true;
+      cap.userData.noReceive = false;
       cap.userData.noOutline = true;
       root.add(cap);
       meshCount += 1;
     }
   });
 
-  meshCount += buildFeatheredCascadeSheets(root, M);
+  meshCount += buildFloatingStreamLeaves(root, M);
 
   root.userData.samples = samples;
   root.userData.runCount = runs.length;
@@ -438,11 +547,14 @@ export function createStreamBed(M) {
   runs.forEach((run, runIndex) => {
     const geo = sheetGeometry(run, WATER_COLS, (st, t) => {
       const x = st.cx + lerp(-st.bedLeft, st.bedRight, t);
-      return [x, liningY(x, st.z, st.wy), st.z];
+      const edgeTuck = Math.sin(t * Math.PI);
+      const baseLining = liningY(x, st.z, st.wy);
+      const y = baseLining - (1 - edgeTuck) * 0.018;
+      return [x, y, st.z];
     });
     addPlanarUv(geo, BED_UV_TILE);
 
-    const lining = mesh(geo, M.soilStreamBed, `streamBed-lining-${runIndex}`);
+    const lining = mesh(geo, M.riverbedSand || M.soilStreamBed, `streamBed-lining-${runIndex}`);
     lining.castShadow = false;
     lining.receiveShadow = true;
     lining.userData.noCast = true;
@@ -453,6 +565,7 @@ export function createStreamBed(M) {
   const all = runs.flat();
   const rand = rng(4127);
   const stratMat = M.stoneRockStratified || M.stoneRock;
+  const mossyMat = M.stoneRockMossy || M.stoneRockWet;
   const chipMat = M.stoneChip || M.stonePebble;
 
   // 1. 6 级小瀑布多层次天然咬合叠石堰（每级 9 块独立岩石 Mesh = 两侧护堰劈理石 + 扁平堰唇石板 + 咬合楔石，共 54 块）
@@ -461,14 +574,14 @@ export function createStreamBed(M) {
     const half = streamBankHalf(cas.z);
     const wy = waterY(cas.z);
 
-    // 1a. 6 块主次错落的劈理堰石（两侧露出岸线护坡，中段半浸托起水帘）
+    // 1a. 6 块主次错落的劈理堰石（两侧露出岸线护坡并部分覆苔，中段半浸托起水帘）
     const weirSlots = [
-      { dx: -half * 0.82, dz: -0.10, r: 0.35, flat: 0.58, mat: M.stoneRockWet },
+      { dx: -half * 0.82, dz: -0.10, r: 0.35, flat: 0.58, mat: cIdx % 2 === 0 ? mossyMat : M.stoneRockWet },
       { dx: -half * 0.54, dz: 0.08, r: 0.27, flat: 0.52, mat: stratMat },
       { dx: -half * 0.24, dz: -0.05, r: 0.23, flat: 0.46, mat: M.stoneStream },
       { dx: half * 0.22, dz: 0.04, r: 0.22, flat: 0.46, mat: M.stoneStream },
       { dx: half * 0.52, dz: -0.06, r: 0.27, flat: 0.52, mat: M.stoneRock },
-      { dx: half * 0.82, dz: 0.09, r: 0.36, flat: 0.58, mat: stratMat }
+      { dx: half * 0.82, dz: 0.09, r: 0.36, flat: 0.58, mat: cIdx % 2 === 1 ? mossyMat : stratMat }
     ];
     weirSlots.forEach((slot, sIdx) => {
       const wx = cx + slot.dx + (rand() - 0.5) * 0.05;
@@ -503,7 +616,7 @@ export function createStreamBed(M) {
       meshCount += 1;
     });
 
-    // 1b. 3 块扁平锐棱跌水堰唇石板（slabGeometry，构成瀑布段落ち台阶层理）
+    // 1b. 3 块扁平锐棱跌水堰唇石板（浸没于水舌下方，noOutline = true 以免水中出现黑边圈）
     const lipOffsets = [-half * 0.36, 0.0, half * 0.36];
     lipOffsets.forEach((dx, lIdx) => {
       const lx = cx + dx + (rand() - 0.5) * 0.04;
@@ -519,7 +632,7 @@ export function createStreamBed(M) {
       lipSlab.castShadow = false;
       lipSlab.receiveShadow = true;
       lipSlab.userData.noCast = true;
-      lipSlab.userData.noOutline = false;
+      lipSlab.userData.noOutline = true;
       root.add(lipSlab);
       meshCount += 1;
     });
@@ -536,9 +649,9 @@ export function createStreamBed(M) {
       const x = st.cx + lerp(-st.bedLeft, st.bedRight, 0.2 + rand() * 0.6);
       const ground = liningY(x, st.z, st.wy);
       const topAboveGround = radius * 0.16 * 1.35;
-      const y = Math.min(ground + 0.015, st.wy - 0.022 - topAboveGround);
+      const y = Math.min(ground + 0.012, st.wy - 0.024 - topAboveGround);
       const geo = triplanarUv(gravelBarGeometry(radius, 7100 + barIndex * 37), BED_UV_TILE);
-      const bar = mesh(geo, M.soilBank, `streamBed-bar-${barIndex}`);
+      const bar = mesh(geo, M.stonePebble, `streamBed-bar-${barIndex}`);
       bar.position.set(x, y, st.z);
       bar.rotation.y = rand() * Math.PI;
       bar.castShadow = false;
@@ -552,25 +665,25 @@ export function createStreamBed(M) {
     }
   });
 
-  // 3. 200 颗多面体棱角溪底河石与碎石片（大小、扁平度与冷暖灰调错落）
+  // 3. 200 颗多面体棱角溪底河石与浅色卵石（水下石头一律 noOutline = true，通过清澈折射展现真实立体块面）
   const pebblesPerRun = runs.map((run) => Math.max(1, Math.round((PEBBLE_COUNT * run.length) / all.length)));
   let pebbleIndex = 0;
   runs.forEach((run, runIndex) => {
     const count = pebblesPerRun[runIndex];
     for (let i = 0; i < count; i++) {
       const st = run[Math.floor(rand() * run.length)];
-      const radius = 0.038 + rand() * 0.082;
+      const radius = 0.042 + rand() * 0.088;
       const flatten = 0.38 + rand() * 0.28;
       const x = st.cx + lerp(-st.bedLeft, st.bedRight, 0.06 + rand() * 0.88);
       const ground = liningY(x, st.z, st.wy);
-      const y = ground + 0.22 * radius;
+      const y = ground + 0.24 * radius;
       const geo = triplanarUv(pebbleGeometry(radius, 9100 + pebbleIndex * 53, flatten), PEBBLE_TILE, [x, 0, st.z]);
       const pick = rand();
-      const mat = pick < 0.35
+      const mat = pick < 0.30
         ? M.stoneStream
-        : pick < 0.65
+        : pick < 0.60
           ? M.stonePebble
-          : pick < 0.85
+          : pick < 0.82
             ? stratMat
             : chipMat;
       const pebble = mesh(geo, mat, `streamBed-gravel-${pebbleIndex}`);
@@ -586,7 +699,7 @@ export function createStreamBed(M) {
       pebble.castShadow = false;
       pebble.receiveShadow = true;
       pebble.userData.noCast = true;
-      pebble.userData.noOutline = radius < 0.085;
+      pebble.userData.noOutline = true;
       root.add(pebble);
       samples.push({ x, y, z: st.z });
       meshCount += 1;
