@@ -3,11 +3,11 @@ import * as THREE from 'three';
 import { PALETTE, ANIM } from './config.js';
 import {
   setBanding, applyWeathering, applyMossAttachment, applyLeafTranslucency,
-  applyShadowLift, applyLeafFlutter, applyWaterFlow
+  applyShadowLift, applyLeafFlutter, applyWaterFlow, applySubmergedCaustics
 } from './toon.js';
 import {
   woodTexture, weatheredPaintTexture, barkTexture, gravelTexture, stoneTexture,
-  soilTexture, sandTexture, mossTexture, waterDetailTexture, mistVeilTexture
+  soilTexture, sandTexture, mossTexture, mistVeilTexture
 } from './textures.js';
 
 function toon(options = {}) {
@@ -118,21 +118,24 @@ function stem(name, { color, seed, planks = 6, wear = 0.3 }) {
   return material;
 }
 
+/**
+ * 澄澈无贴图光学水体材质：
+ * 移除 roughnessMap 噪点贴图与 MeshPhysicalMaterial.transmission 内部低分抖动模糊（消除白色点阵与塑料感），
+ * 完全依靠自定义物理菲涅尔透射与水底真实斯涅尔折射焦散呈现「清可见底、澄澈透亮」的山间清溪质感。
+ */
 function water(name, {
-  color, opacity, roughness, clearcoat, clearcoatRoughness,
-  transmission = 0.84, envMapIntensity = 0.14, flow
+  color, opacity, roughness = 0.12, clearcoat = 0.18, clearcoatRoughness = 0.16,
+  envMapIntensity = 0.08, depthWrite = false, flow
 }) {
   const material = named(physical({
     color,
-    roughnessMap: waterDetailTexture({ size: 512, seed: 97 }),
-    transmission,
-    thickness: 0.22,
     roughness,
     metalness: 0,
-    ior: 1.33,
+    ior: 1.333,
     envMapIntensity,
     transparent: true,
     opacity,
+    depthWrite,
     clearcoat,
     clearcoatRoughness,
     side: THREE.DoubleSide
@@ -261,7 +264,7 @@ export function createMaterialLibrary() {
   M.padEdge = named(toon({ color: PALETTE.padEdge, band: 'soft' }), 'padEdge');
   M.padChamfer = named(toon({ color: PALETTE.padHighlight, band: 'soft' }), 'padChamfer');
 
-  /* ---------------- 泥土 ---------------- */
+  /* ---------------- 泥土（溪床泥沙注入实时折射焦散与水深比尔消光） ---------------- */
   M.soilTerrain = named(toon({
     color: 0xffffff, band: 'soft',
     map: soilTexture({ size: 2048, seed: 101 })
@@ -282,16 +285,18 @@ export function createMaterialLibrary() {
     color: 0xffffff, band: 'mid',
     map: soilTexture({ size: 1024, base: PALETTE.soil, seed: 131 })
   }), 'soilBank');
+  applySubmergedCaustics(M.soilBank);
   M.soilStreamBed = named(toon({
     color: 0xffffff, band: 'soft',
     map: sandTexture({ size: 1024, seed: 113 })
   }), 'soilStreamBed');
+  applySubmergedCaustics(M.soilStreamBed);
   M.soilCut = named(toon({
     color: 0xffffff, band: 'mid',
     map: soilTexture({ size: 1024, base: PALETTE.soilDark, seed: 139 })
   }), 'soilCut');
 
-  /* ---------------- 石材 ---------------- */
+  /* ---------------- 石材（水中卵石与溪石同步注入水下折射焦散） ---------------- */
   M.stoneStepLower = stoneStepZone('stoneStepLower', {
     seed: 13, mossHeight: 1.75, mossAmount: 0.42, wearStart: 0.16, wearBand: 1.6
   });
@@ -320,6 +325,7 @@ export function createMaterialLibrary() {
     wearAmount: 0.4, dustAmount: 0.18
   });
   applyMossAttachment(M.stoneRock, { color: PALETTE.moss, height: 1.4, band: 1.1, amount: 0.45 });
+  applySubmergedCaustics(M.stoneRock);
   M.stoneRockWet = named(physical({
     color: 0xffffff, roughness: 0.24, metalness: 0,
     clearcoat: 0.68, clearcoatRoughness: 0.2,
@@ -330,6 +336,7 @@ export function createMaterialLibrary() {
     })
   }), 'stoneRockWet');
   applyMossAttachment(M.stoneRockWet, { color: PALETTE.moss, height: 1.2, band: 0.9, amount: 0.42 });
+  applySubmergedCaustics(M.stoneRockWet);
   M.stoneStream = named(physical({
     color: 0xffffff, roughness: 0.32, metalness: 0,
     clearcoat: 0.52, clearcoatRoughness: 0.26,
@@ -340,6 +347,7 @@ export function createMaterialLibrary() {
     })
   }), 'stoneStream');
   applyMossAttachment(M.stoneStream, { color: PALETTE.mossWet, height: 1.5, band: 1.1, amount: 0.48 });
+  applySubmergedCaustics(M.stoneStream);
   M.stonePebble = named(toon({
     color: 0xffffff, band: 'mid',
     map: gravelTexture({
@@ -347,6 +355,7 @@ export function createMaterialLibrary() {
       shade: PALETTE.stoneDark, density: 34
     })
   }), 'stonePebble');
+  applySubmergedCaustics(M.stonePebble);
 
   /* ---------------- 树皮 ---------------- */
   M.barkKusunoki = bark('barkKusunoki', {
@@ -375,8 +384,7 @@ export function createMaterialLibrary() {
     color: PALETTE.mossWet, height: 2.2, band: 1.8, amount: 0.58
   });
 
-  /* ---------------- 叶片：前景/两侧压暗深翠，高处林冠逆光透亮 ---------------- */
-  // 樟（常绿）—— 深林浓绿画框
+  /* ---------------- 叶片 ---------------- */
   M.leafSheetEvergreen = leaf('leafSheetEvergreen', PALETTE.leafEvergreen, {
     tint: 0x4b8749, strength: 0.14, flutterPeriod: 3.1
   });
@@ -386,14 +394,12 @@ export function createMaterialLibrary() {
   M.leafSheetEvergreenLight = leaf('leafSheetEvergreenLight', PALETTE.leafEvergreenLight, {
     tint: 0x6ea85e, strength: 0.24, power: 2.4, flutterPeriod: 4.1
   });
-  // 榊（常绿中下层）
   M.leafSheetSakaki = leaf('leafSheetSakaki', PALETTE.leafSakaki, {
     tint: 0x457d44, strength: 0.12, flutterPeriod: 3.7
   });
   M.leafSheetSakakiDeep = leaf('leafSheetSakakiDeep', PALETTE.leafSakakiDeep, {
     tint: 0x244726, strength: 0.05, power: 3.2, flutterPeriod: 4.3
   });
-  // 鸟居上方逆光采光林冠（还原参考图鸟居正上方透出天光的鲜亮嫩绿树冠）
   M.leafSheetMaple = leaf('leafSheetMaple', PALETTE.leafMaple, {
     tint: 0x7ab856, strength: 0.38, flutterPeriod: 3.3
   });
@@ -403,7 +409,6 @@ export function createMaterialLibrary() {
   M.leafSheetMapleLight = leaf('leafSheetMapleLight', PALETTE.leafMapleLight, {
     tint: 0x9cd46e, strength: 0.52, power: 2.1, flutterPeriod: 3.9
   });
-  // 灌丛（前景遮挡枝叶画框：保持深邃墨绿剪影层次，不泛白）
   M.leafSheetShrub = leaf('leafSheetShrub', PALETTE.shrub, {
     tint: 0x356135, strength: 0.08, flutterPeriod: 3.4
   });
@@ -413,7 +418,6 @@ export function createMaterialLibrary() {
   M.leafSheetShrubLight = leaf('leafSheetShrubLight', PALETTE.shrubLight, {
     tint: 0x4a7a44, strength: 0.14, power: 2.6, flutterPeriod: 4.6
   });
-  // 蕨类
   M.leafSheetFern = leaf('leafSheetFern', PALETTE.fern, {
     tint: 0x5c8f4c, strength: 0.16, power: 2.8
   });
@@ -423,7 +427,6 @@ export function createMaterialLibrary() {
   M.leafSheetFernTip = leaf('leafSheetFernTip', PALETTE.fernTip, {
     tint: 0x7eb362, strength: 0.24, power: 2.4
   });
-  // 地面腐叶层
   M.leafSheetGround = leaf('leafSheetGround', PALETTE.groundLeaf, {
     tint: 0x4d3c28, strength: 0.04, power: 3.6
   });
@@ -439,14 +442,12 @@ export function createMaterialLibrary() {
   M.leafSheetGroundWet = leaf('leafSheetGroundWet', PALETTE.groundLeafDeep, {
     tint: 0x2b3326, strength: 0.02, power: 3.8
   });
-  // 溪畔长草
   M.leafSheetGrass = leaf('leafSheetGrass', PALETTE.fernTip, {
     tint: 0x72ab58, strength: 0.2, power: 2.6
   });
   M.leafSheetGrassDeep = leaf('leafSheetGrassDeep', PALETTE.fern, {
     tint: 0x49783c, strength: 0.12, power: 3.0
   });
-  // 藤蔓
   M.leafSheetVine = leaf('leafSheetVine', PALETTE.leafEvergreenLight, {
     tint: 0x5e9652, strength: 0.18, flutterPeriod: 4.4
   });
@@ -481,46 +482,52 @@ export function createMaterialLibrary() {
     map: mossTexture({ size: 512, base: PALETTE.moss, wet: PALETTE.mossDamp, seed: 83 })
   }), 'mossStone');
   applyMossAttachment(M.mossStone, { color: PALETTE.mossWet, height: 2.2, band: 1.2, amount: 0.4 });
+  applySubmergedCaustics(M.mossStone);
 
-  /* ---------------- 水体（清澈透底 + 叠瀑白沫 + 漩涡回流，压暗环境反射消除镜面感） ---------------- */
+  /* ---------------- 水体（无贴图、极度清澈透底 + 水底折射焦散 + 物理流体粒子） ---------------- */
   M.waterSurface = water('waterSurface', {
     color: PALETTE.water,
-    opacity: 0.44,
-    transmission: 0.88,
-    envMapIntensity: 0.1,
-    roughness: 0.28,
-    clearcoat: 0.12,
-    clearcoatRoughness: 0.3,
-    flow: { speed: 0.14, scale: 0.65, strength: 0.88, overlayMode: 0 }
+    opacity: 0.24,
+    envMapIntensity: 0.06,
+    roughness: 0.14,
+    clearcoat: 0.16,
+    clearcoatRoughness: 0.18,
+    flow: { speed: 0.16, scale: 0.72, strength: 0.92, overlayMode: 0 }
   });
   M.waterfallFoam = water('waterCascadeFoam', {
-    color: 0x5c8c7c,
-    opacity: 0.54,
-    transmission: 0.52,
-    envMapIntensity: 0.1,
-    roughness: 0.34,
+    color: 0x568274,
+    opacity: 0.42,
+    envMapIntensity: 0.06,
+    roughness: 0.24,
     clearcoat: 0.1,
-    clearcoatRoughness: 0.3,
-    flow: { speed: 0.32, scale: 1.25, strength: 1.15, overlayMode: 1 }
+    clearcoatRoughness: 0.24,
+    flow: { speed: 0.36, scale: 1.25, strength: 1.1, overlayMode: 1 }
   });
   M.waterEddy = water('waterEddyFoam', {
-    color: 0x4b7869,
-    opacity: 0.46,
-    transmission: 0.62,
-    envMapIntensity: 0.1,
-    roughness: 0.3,
+    color: 0x487365,
+    opacity: 0.34,
+    envMapIntensity: 0.06,
+    roughness: 0.22,
     clearcoat: 0.1,
-    clearcoatRoughness: 0.28,
-    flow: { speed: 0.2, scale: 1.0, strength: 1.0, overlayMode: 2 }
+    clearcoatRoughness: 0.22,
+    flow: { speed: 0.22, scale: 1.0, strength: 1.0, overlayMode: 2 }
+  });
+  M.waterParticle = water('waterParticleFoam', {
+    color: 0x709e8e,
+    opacity: 0.48,
+    envMapIntensity: 0.05,
+    roughness: 0.2,
+    clearcoat: 0.1,
+    clearcoatRoughness: 0.2,
+    flow: { speed: 0.28, scale: 1.0, strength: 1.0, overlayMode: 3 }
   });
   M.puddleWater = water('puddleWater', {
     color: PALETTE.waterShallow,
-    opacity: 0.52,
-    transmission: 0.78,
-    envMapIntensity: 0.18,
-    roughness: 0.18,
-    clearcoat: 0.25,
-    clearcoatRoughness: 0.2,
+    opacity: 0.36,
+    envMapIntensity: 0.12,
+    roughness: 0.14,
+    clearcoat: 0.22,
+    clearcoatRoughness: 0.18,
     flow: { speed: 0.04, scale: 0.9, strength: 0.38, overlayMode: 0 }
   });
 

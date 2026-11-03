@@ -1,10 +1,43 @@
-// 山涧叠瀑清澈水体片元着色器：
-// 融合 danielsofran/threejs-water-shader 与 jeantimex/threejs-water 的核心水体光学特征，
-// 针对雨后深林幽暗色调专门压暗适配，消除死白镜面反光，呈现四重水体细节：
-// 1) 清澈透底（Clear Depth Absorption）：低不透明度 + 深潭/浅滩比尔定律吸收，清晰透出溪底湿泥与卵石；
-// 2) 粼粼波光（Voronoi Cellular Caustics + Micro-Glints）：双层错速蜂窝焦散网与四向波纹法线微闪高光；
-// 3) 漩涡回流（Swirling Vortex / Eddy Field）：石畔与瀑下深潭的旋转涡流纹理与环状水纹；
-// 4) 叠瀑激荡（Cascade White-Water Agitation）：根据水面坡度（小瀑布跌水处法线倾斜）与湍流噪声生成丝状瀑流与碎沫。
+// 阶段二 & 阶段三：基于二维浅水方程（SWE）高度场的顶点位移、实时焦散、深度消光（Depth Fade）与岸边/撞石泡沫着色器
+
+export const WATER_SWE_VERT_UNIFORMS = /* glsl */ `
+  uniform sampler2D uSweTex;
+  uniform vec2 uSweDomainMin;
+  uniform vec2 uSweDomainMax;
+  uniform vec2 uSweTexel;
+  uniform float uSweDisplaceScale;
+  varying vec3 vSweNormal;
+  varying float vSweAgitation;
+  varying float vSweObstacle;
+  varying vec4 vWaterClipPos;
+`;
+
+export const WATER_SWE_VERT_DISPLACE = /* glsl */ `
+  vec4 sweWorldTmp = modelMatrix * vec4( transformed, 1.0 );
+  vec2 sweSpan = max( vec2( 0.001 ), uSweDomainMax - uSweDomainMin );
+  vec2 sweUv = clamp( ( sweWorldTmp.xz - uSweDomainMin ) / sweSpan, 0.0, 1.0 );
+  vec4 sweSample = texture2D( uSweTex, sweUv );
+  float sweHL = texture2D( uSweTex, sweUv - vec2( uSweTexel.x, 0.0 ) ).r;
+  float sweHR = texture2D( uSweTex, sweUv + vec2( uSweTexel.x, 0.0 ) ).r;
+  float sweHD = texture2D( uSweTex, sweUv - vec2( 0.0, uSweTexel.y ) ).r;
+  float sweHU = texture2D( uSweTex, sweUv + vec2( 0.0, uSweTexel.y ) ).r;
+
+  float sweMask = 1.0 - step( 0.5, sweSample.b );
+  transformed.y += sweSample.r * uSweDisplaceScale * sweMask;
+
+  vec2 worldStep = sweSpan * uSweTexel * 2.0;
+  vSweNormal = normalize( vec3(
+    ( sweHL - sweHR ) * uSweDisplaceScale / max( 0.01, worldStep.x ),
+    1.0,
+    ( sweHD - sweHU ) * uSweDisplaceScale / max( 0.01, worldStep.y )
+  ) );
+  vSweAgitation = sweSample.a;
+  vSweObstacle = sweSample.b;
+`;
+
+export const WATER_SWE_VERT_CLIP = /* glsl */ `
+  vWaterClipPos = gl_Position;
+`;
 
 export const WATER_FLOW_UNIFORMS = /* glsl */ `
   uniform float uTime;
@@ -15,6 +48,21 @@ export const WATER_FLOW_UNIFORMS = /* glsl */ `
   uniform float uFlowScale;
   uniform float uFlowStrength;
   uniform float uOverlayMode;
+  uniform sampler2D uSweTex;
+  uniform vec2 uSweDomainMin;
+  uniform vec2 uSweDomainMax;
+  uniform vec2 uSweTexel;
+  uniform sampler2D tRefractionColor;
+  uniform sampler2D tRefractionDepth;
+  uniform float uHasRefraction;
+  uniform float uCameraNear;
+  uniform float uCameraFar;
+  uniform float uExtinctionDensity;
+  uniform float uShoreFoamThreshold;
+  varying vec3 vSweNormal;
+  varying float vSweAgitation;
+  varying float vSweObstacle;
+  varying vec4 vWaterClipPos;
 `;
 
 export const WATER_FLOW_FRAG = /* glsl */ `
@@ -22,11 +70,6 @@ export const WATER_FLOW_FRAG = /* glsl */ `
     p = fract( p * vec2( 123.34, 456.21 ) );
     p += dot( p, p + 45.32 );
     return fract( p.x * p.y );
-  }
-
-  vec2 waterHash22( vec2 p ) {
-    float n = waterHash21( p );
-    return vec2( n, waterHash21( p + n + 17.3 ) );
   }
 
   float waterNoise( vec2 p ) {
@@ -40,43 +83,38 @@ export const WATER_FLOW_FRAG = /* glsl */ `
     return mix( mix( a, b, u.x ), mix( c, d, u.x ), u.y );
   }
 
-  // Voronoi 蜂窝焦散网：模拟清澈浅溪中的粼粼波光与水底焦散亮网
-  float waterCausticLayer( vec2 uv, float time ) {
-    vec2 g = floor( uv );
-    vec2 f = fract( uv );
-    float minDist1 = 1.0;
-    float minDist2 = 1.0;
-    for ( int y = -1; y <= 1; y++ ) {
-      for ( int x = -1; x <= 1; x++ ) {
-        vec2 lattice = vec2( float( x ), float( y ) );
-        vec2 rnd = waterHash22( g + lattice );
-        vec2 point = lattice + 0.5 + 0.42 * sin( time * 1.35 + 6.2831853 * rnd );
-        float d = length( point - f );
-        if ( d < minDist1 ) {
-          minDist2 = minDist1;
-          minDist1 = d;
-        } else if ( d < minDist2 ) {
-          minDist2 = d;
-        }
-      }
+  float waterFbm( vec2 p ) {
+    float v = 0.0;
+    float a = 0.5;
+    mat2 rot = mat2( 0.80, -0.60, 0.60, 0.80 );
+    for ( int i = 0; i < 4; i++ ) {
+      v += a * waterNoise( p );
+      p = rot * p * 2.03 + vec2( 13.7, -9.2 );
+      a *= 0.5;
     }
-    float edge = clamp( minDist2 - minDist1, 0.0, 1.0 );
-    return pow( 1.0 - smoothstep( 0.0, 0.28, edge ), 2.2 );
+    return v;
   }
 
-  // 局部漩涡场：在石块背水侧与小瀑布落水潭生成旋转回流涡纹
-  vec2 waterVortexWarp( vec2 p, float time ) {
-    vec2 cell = floor( p * 0.55 );
-    vec2 local = fract( p * 0.55 ) - 0.5;
-    float r = length( local );
-    float seed = waterHash21( cell );
-    float spinDir = seed > 0.5 ? 1.0 : -1.0;
-    float swirl = exp( -r * r * 9.5 ) * ( 2.6 * spinDir );
-    float angle = swirl + time * 1.15 * spinDir;
-    float s = sin( angle );
-    float c = cos( angle );
-    vec2 rotated = vec2( local.x * c - local.y * s, local.x * s + local.y * c );
-    return ( cell + rotated + 0.5 ) / 0.55;
+  float linearizeDepth( float d, float zNear, float zFar ) {
+    float zNdc = d * 2.0 - 1.0;
+    return ( 2.0 * zNear * zFar ) / max( 0.0001, zFar + zNear - zNdc * ( zFar - zNear ) );
+  }
+
+  float streamApproxCenterX( float z ) {
+    return -3.25 + 0.58 * sin( z * 0.36 + 0.5 ) + 0.28 * cos( z * 0.21 - 0.8 );
+  }
+
+  vec2 streamWaveGradient( vec2 xz, float time ) {
+    float cx = streamApproxCenterX( xz.y );
+    float lat = xz.x - cx;
+    float s = xz.y * 1.04;
+    vec2 q1 = vec2( lat * 2.4 + sin( s * 0.7 ) * 0.4, s * 2.1 - time * 2.8 );
+    vec2 q2 = vec2( lat * 4.1 - cos( s * 1.1 ) * 0.3, s * 3.8 - time * 4.2 );
+    float eps = 0.06;
+    float h0 = waterFbm( q1 ) * 0.65 + waterFbm( q2 ) * 0.35;
+    float hx = waterFbm( q1 + vec2( eps, 0.0 ) ) * 0.65 + waterFbm( q2 + vec2( eps, 0.0 ) ) * 0.35;
+    float hz = waterFbm( q1 + vec2( 0.0, eps ) ) * 0.65 + waterFbm( q2 + vec2( 0.0, eps ) ) * 0.35;
+    return ( vec2( hx - h0, hz - h0 ) / eps ) * 0.14;
   }
 
   vec4 waterFlow( vec3 color, float baseAlpha, vec3 worldPos, vec3 normal, vec3 viewDir, vec2 localUv ) {
@@ -86,77 +124,181 @@ export const WATER_FLOW_FRAG = /* glsl */ `
     float along = dot( p, flowDir );
     float lateral = dot( p, latDir );
 
-    // 1. 漩涡扭曲坐标 + 顺流推进
-    vec2 warped = waterVortexWarp( p, uTime * uFlowSpeed * 4.0 );
-    float wAlong = dot( warped, flowDir ) * uFlowScale;
-    float wLat = dot( warped, latDir );
+    vec2 microGrad = streamWaveGradient( p, uTime * ( 0.8 + uFlowSpeed * 2.4 ) );
+    vec3 sweN = length( vSweNormal ) > 0.1 ? vSweNormal : vec3( 0.0, 1.0, 0.0 );
+    vec3 nrm = normalize( normal + ( sweN - vec3( 0.0, 1.0, 0.0 ) ) * 1.35 + vec3( -microGrad.x, 0.0, -microGrad.y ) );
+    vec3 V = normalize( viewDir );
+    float ndv = clamp( abs( dot( nrm, V ) ), 0.0, 1.0 );
 
-    // 2. 双层错速 Voronoi 焦散（粼粼波光）
-    vec2 uv1 = vec2( wAlong * 3.4 - uTime * uFlowSpeed * 5.2, wLat * 3.2 + sin( along * 1.3 ) * 0.35 );
-    vec2 uv2 = vec2( wAlong * 4.6 - uTime * uFlowSpeed * 3.7 + 1.7, wLat * 4.4 - cos( along * 1.7 ) * 0.3 );
-    float c1 = waterCausticLayer( uv1, uTime * 0.9 );
-    float c2 = waterCausticLayer( uv2, -uTime * 1.1 );
-    float caustics = clamp( c1 * 0.65 + c2 * 0.65, 0.0, 1.0 );
+    float fresnel = 0.02 + 0.40 * pow( 1.0 - ndv, 4.2 );
 
-    // 3. 漩涡环纹（Eddy Rings）
-    vec2 eddyCell = fract( p * 0.62 + vec2( 0.15 * sin( uTime * 0.4 ), -uTime * uFlowSpeed * 1.2 ) ) - 0.5;
-    float eddyR = length( eddyCell );
-    float eddyAng = atan( eddyCell.y, eddyCell.x );
-    float eddySpiral = sin( eddyR * 28.0 - eddyAng * 2.0 - uTime * 2.6 );
-    float eddyMask = smoothstep( 0.42, 0.12, eddyR ) * smoothstep( 0.03, 0.12, eddyR ) * max( 0.0, eddySpiral );
+    vec2 sweSpan = max( vec2( 0.001 ), uSweDomainMax - uSweDomainMin );
+    vec2 sweUv = clamp( ( p - uSweDomainMin ) / sweSpan, 0.0, 1.0 );
+    vec4 sweFrag = texture2D( uSweTex, sweUv );
+    float agitation = max( vSweAgitation, sweFrag.a );
 
-    // 4. 小瀑布跌水与湍流激荡（Cascade & Agitation）
-    vec3 nrm = normalize( normal );
-    float slopeTilt = clamp( ( 1.0 - abs( nrm.y ) ) * 4.8, 0.0, 1.0 );
-    float streakNoise = waterNoise( vec2( wLat * 14.0, along * 3.2 - uTime * uFlowSpeed * 16.0 ) );
-    float fineFoam = waterNoise( vec2( wLat * 26.0, along * 7.5 - uTime * uFlowSpeed * 22.0 ) );
-    float cascadeStreaks = slopeTilt * smoothstep( 0.32, 0.78, streakNoise * 0.65 + fineFoam * 0.35 );
+    vec2 foamUv = vec2( lateral * 5.0 + nrm.x * 0.8, along * 2.0 - uTime * uFlowSpeed * 9.2 );
+    float fbmA = waterFbm( foamUv );
+    float fbmB = waterFbm( foamUv * vec2( 2.1, 1.4 ) + vec2( 6.3, -uTime * uFlowSpeed * 4.8 ) );
+    float porousFoam = smoothstep( 0.50, 0.78, fbmA * 0.6 + fbmB * 0.4 );
 
-    // 跌水潭底部的冲击碎沫带
-    float plungeWave = sin( along * 1.57 - 0.4 );
-    float plungePool = pow( max( 0.0, plungeWave ), 8.0 ) * smoothstep( 0.42, 0.82, streakNoise );
+    float cx = streamApproxCenterX( p.y );
+    float bankDist = abs( p.x - cx );
+    float geomDepth = clamp( 0.22 * ( 1.0 - smoothstep( 0.45, 1.35, bankDist ) ), 0.008, 0.32 );
+    float waterDepth = geomDepth;
 
-    // 5. 细碎波光闪烁（Sparkle Glints，克制不刺眼，绝不像镜子）
-    float ripple1 = sin( along * 18.0 + lateral * 9.0 - uTime * 4.2 );
-    float ripple2 = cos( along * 23.0 - lateral * 14.0 - uTime * 5.1 );
-    float glint = pow( max( 0.0, ripple1 * ripple2 ), 6.0 ) * ( 0.4 + 0.6 * caustics );
+    vec2 screenUv = ( vWaterClipPos.xy / max( 0.0001, vWaterClipPos.w ) ) * 0.5 + 0.5;
+    vec2 refractUv = clamp( screenUv - nrm.xz * 0.012, vec2( 0.002 ), vec2( 0.998 ) );
 
-    // 6. 幽暗深林水色合成（压暗镜面反射，突出清澈水底层次、翠绿焦散与柔和泡沫）
-    float ndv = abs( dot( nrm, normalize( viewDir ) ) );
-    float fresnel = pow( 1.0 - clamp( ndv, 0.0, 1.0 ), 2.8 ) * 0.28;
+    if ( uHasRefraction > 0.5 ) {
+      float rawSceneD = texture2D( tRefractionDepth, refractUv ).r;
+      if ( rawSceneD < 0.9999 ) {
+        float sceneD = linearizeDepth( rawSceneD, uCameraNear, uCameraFar );
+        float surfD = linearizeDepth( gl_FragCoord.z, uCameraNear, uCameraFar );
+        float diffD = ( sceneD - surfD ) * ndv;
+        if ( diffD > 0.0 ) {
+          waterDepth = clamp( diffD, 0.005, 0.65 );
+        }
+      }
+    }
 
-    vec3 deepTone = uDeepColor * 0.74;
-    vec3 shallowTone = uShallowColor * 0.88;
-    vec3 body = mix( deepTone, shallowTone, 0.22 + 0.56 * caustics + 0.22 * eddyMask );
+    vec3 canopyReflect = vec3( 0.19, 0.33, 0.26 );
+    vec3 foamTint = vec3( 0.52, 0.66, 0.60 );
+    vec3 shallowTone = uShallowColor * 0.92;
+    vec3 deepTone = uDeepColor * 0.82;
 
-    // 柔和青白泡沫色（适配雨后阴天幽暗森林，不过曝）
-    vec3 foamColor = vec3( 0.42, 0.56, 0.50 );
-    vec3 glintColor = vec3( 0.54, 0.72, 0.64 );
-
-    // 针对跌水水帘（uOverlayMode == 1）与漩涡盘（uOverlayMode == 2）做边缘羽化与丝状镂空，消除生硬多边形块感
+    if ( uOverlayMode > 2.5 ) {
+      return vec4( mix( shallowTone * 1.12, foamTint * 1.1, 0.62 ), baseAlpha * 0.68 );
+    }
     if ( uOverlayMode > 1.5 ) {
       vec2 centered = localUv - vec2( 0.5 );
       float dist = length( centered ) * 2.0;
       float ang = atan( centered.y, centered.x );
-      float radialFade = smoothstep( 1.0, 0.28, dist ) * smoothstep( 0.04, 0.22, dist );
-      float spiral = 0.5 + 0.5 * sin( dist * 18.0 - ang * 3.0 - uTime * 2.4 + streakNoise * 3.2 );
-      float ringMask = radialFade * smoothstep( 0.36, 0.84, spiral * 0.65 + fineFoam * 0.35 );
-      vec3 eddyCol = mix( shallowTone * 0.85, foamColor, 0.55 + 0.45 * spiral );
-      return vec4( eddyCol, baseAlpha * ringMask );
-    } else if ( uOverlayMode > 0.5 ) {
-      float edgeX = smoothstep( 0.0, 0.22, localUv.x ) * smoothstep( 1.0, 0.78, localUv.x );
-      float edgeY = smoothstep( 0.0, 0.18, localUv.y ) * smoothstep( 1.0, 0.76, localUv.y );
-      float threads = smoothstep( 0.34, 0.82, streakNoise * 0.62 + fineFoam * 0.38 );
-      float curtainAlpha = baseAlpha * edgeX * edgeY * ( 0.25 + 0.75 * threads );
-      vec3 curtainCol = mix( shallowTone * 0.82, foamColor * 1.06, threads );
-      return vec4( curtainCol, curtainAlpha );
+      float radialFade = smoothstep( 1.0, 0.24, dist ) * smoothstep( 0.06, 0.26, dist );
+      vec2 swirlUv = vec2( dist * 3.5, ang * 0.95 - uTime * 1.6 + dist * 4.2 );
+      float swirlBand = smoothstep( 0.48, 0.76, waterFbm( swirlUv * 2.2 ) );
+      return vec4( mix( shallowTone, foamTint, 0.5 + 0.5 * swirlBand ), baseAlpha * radialFade * swirlBand * 0.62 );
+    }
+    if ( uOverlayMode > 0.5 ) {
+      float edgeX = smoothstep( 0.0, 0.26, localUv.x ) * smoothstep( 1.0, 0.74, localUv.x );
+      float edgeY = smoothstep( 0.0, 0.20, localUv.y ) * smoothstep( 1.0, 0.76, localUv.y );
+      vec2 fallUv = vec2( localUv.x * 6.0, localUv.y * 2.5 - uTime * 3.6 );
+      float fallThreads = smoothstep( 0.44, 0.78, waterFbm( fallUv ) );
+      return vec4( mix( shallowTone * 0.9, foamTint, fallThreads ), baseAlpha * edgeX * edgeY * ( 0.14 + 0.58 * fallThreads ) );
     }
 
-    float foamAmount = clamp( cascadeStreaks * 0.85 + plungePool * 0.42 + eddyMask * 0.24, 0.0, 0.86 );
-    vec3 waterBase = mix( color * 0.48 + body * 0.52, foamColor, foamAmount * uFlowStrength );
-    vec3 causticGlow = shallowTone * caustics * 0.34 + glintColor * glint * 0.44 + shallowTone * fresnel;
-    float outAlpha = clamp( baseAlpha * ( 0.64 + 0.42 * caustics + 0.65 * foamAmount ), 0.18, 0.82 );
+    float extinction = 1.0 - exp( -uExtinctionDensity * waterDepth );
+    vec3 waterBody = mix( shallowTone, deepTone, extinction );
 
-    return vec4( waterBase + causticGlow * uFlowStrength, outAlpha );
+    if ( uHasRefraction > 0.5 ) {
+      vec3 refractedBed = texture2D( tRefractionColor, refractUv ).rgb;
+      vec3 transTint = mix( vec3( 0.82, 0.96, 0.90 ), shallowTone * 1.35, extinction );
+      waterBody = mix( refractedBed * transTint, deepTone, extinction * 0.68 );
+    }
+
+    float slopeTilt = clamp( ( 1.0 - abs( nrm.y ) ) * 4.5, 0.0, 1.0 );
+    float shoreMask = 1.0 - smoothstep( 0.008, uShoreFoamThreshold, waterDepth );
+    float obstacleFoam = smoothstep( 0.36, 0.82, agitation ) * porousFoam;
+    float shoreFoam = shoreMask * smoothstep( 0.46, 0.76, fbmB ) * 0.55;
+    float cascadeFoam = slopeTilt * porousFoam * 0.82;
+    float totalFoam = clamp( max( cascadeFoam, obstacleFoam * 0.68 + shoreFoam ), 0.0, 0.80 );
+
+    vec3 surfaceCol = mix( waterBody, canopyReflect, fresnel );
+    surfaceCol = mix( surfaceCol, foamTint, totalFoam );
+
+    float edgeFade = 1.0 - smoothstep( 1.15, 1.48, bankDist );
+    float clearAlpha = uHasRefraction > 0.5
+      ? clamp( ( 0.78 + fresnel * 0.18 + totalFoam * 0.20 ) * edgeFade, 0.0, 0.96 )
+      : clamp( ( 0.15 + extinction * 0.22 + fresnel * 0.45 + totalFoam * 0.52 ) * edgeFade, 0.08, 0.72 );
+
+    return vec4( surfaceCol, clearAlpha );
+  }
+`;
+
+export const RIVERBED_CAUSTICS_UNIFORMS = /* glsl */ `
+  uniform float uCausticTime;
+  uniform vec3 uCausticLightDir;
+  uniform vec3 uWaterAbsorbShallow;
+  uniform vec3 uWaterAbsorbDeep;
+  uniform sampler2D uSweTex;
+  uniform vec2 uSweDomainMin;
+  uniform vec2 uSweDomainMax;
+  uniform vec2 uSweTexel;
+`;
+
+export const RIVERBED_CAUSTICS_FRAG = /* glsl */ `
+  float bedHash21( vec2 p ) {
+    p = fract( p * vec2( 127.1, 311.7 ) );
+    p += dot( p, p + 34.23 );
+    return fract( p.x * p.y );
+  }
+
+  float bedNoise( vec2 p ) {
+    vec2 i = floor( p );
+    vec2 f = fract( p );
+    vec2 u = f * f * ( 3.0 - 2.0 * f );
+    return mix(
+      mix( bedHash21( i ), bedHash21( i + vec2( 1.0, 0.0 ) ), u.x ),
+      mix( bedHash21( i + vec2( 0.0, 1.0 ) ), bedHash21( i + vec2( 1.0, 1.0 ) ), u.x ),
+      u.y
+    );
+  }
+
+  float combinedWaveHeightAt( vec2 xz, float t ) {
+    vec2 sweSpan = max( vec2( 0.001 ), uSweDomainMax - uSweDomainMin );
+    vec2 sweUv = clamp( ( xz - uSweDomainMin ) / sweSpan, 0.0, 1.0 );
+    float sweH = texture2D( uSweTex, sweUv ).r * 1.4;
+    vec2 p1 = vec2( xz.x * 2.1, xz.y * 1.6 - t * 1.85 );
+    vec2 p2 = vec2( xz.x * 3.4 - 0.6 * xz.y, xz.y * 2.9 - t * 2.65 );
+    float microH = ( bedNoise( p1 ) - 0.5 ) * 0.038 + ( bedNoise( p2 ) - 0.5 ) * 0.022;
+    return sweH + microH;
+  }
+
+  vec3 applyRiverbedCaustics( vec3 bedColor, vec3 worldPos, vec3 normal ) {
+    float streamMask = smoothstep( -1.10, -1.85, worldPos.x ) * smoothstep( -6.2, -5.0, worldPos.x );
+    if ( streamMask <= 0.001 ) return bedColor;
+
+    float u = clamp( ( 11.6 - worldPos.z ) / 20.8, 0.0, 1.0 );
+    float approxWy = 0.25 + 2.95 * pow( u, 1.08 );
+    float waterDepth = clamp( approxWy - worldPos.y + 0.14, 0.0, 0.65 );
+    float submergeMask = smoothstep( 0.0, 0.06, waterDepth ) * streamMask;
+    if ( submergeMask <= 0.001 ) return bedColor;
+
+    float eps = 0.055;
+    vec2 xz = worldPos.xz;
+    float hC = combinedWaveHeightAt( xz, uCausticTime );
+    float hR = combinedWaveHeightAt( xz + vec2( eps, 0.0 ), uCausticTime );
+    float hU = combinedWaveHeightAt( xz + vec2( 0.0, eps ), uCausticTime );
+    float hL = combinedWaveHeightAt( xz - vec2( eps, 0.0 ), uCausticTime );
+    float hD = combinedWaveHeightAt( xz - vec2( 0.0, eps ), uCausticTime );
+
+    vec3 surfNormal = normalize( vec3( ( hL - hR ) / ( 2.0 * eps ), 1.0, ( hD - hU ) / ( 2.0 * eps ) ) );
+    vec3 lightDir = normalize( uCausticLightDir );
+
+    vec3 flatRay = refract( -lightDir, vec3( 0.0, 1.0, 0.0 ), 0.75 );
+    vec3 dispRay = refract( -lightDir, surfNormal, 0.75 );
+    vec3 oldPos = worldPos + flatRay * ( waterDepth / max( 0.2, abs( flatRay.y ) ) );
+    vec3 newPos = worldPos + dispRay * ( waterDepth / max( 0.2, abs( dispRay.y ) ) );
+
+    float oldArea = length( dFdx( oldPos ) ) * length( dFdy( oldPos ) );
+    float newArea = max( 1e-7, length( dFdx( newPos ) ) * length( dFdy( newPos ) ) );
+    float areaRatio = clamp( oldArea / newArea, 0.4, 2.6 );
+
+    float laplacian = ( hR + hL + hU + hD - 4.0 * hC ) / ( eps * eps );
+    float focusDepth = clamp( waterDepth * 1.8, 0.08, 0.55 );
+    float curvatureFocus = clamp( 1.0 - laplacian * focusDepth * 0.42, 0.25, 2.8 );
+
+    float causticNet = pow( max( 0.0, ( areaRatio * 0.45 + curvatureFocus * 0.55 ) - 0.74 ), 1.65 );
+    float net2 = bedNoise( newPos.xz * 4.8 + vec2( 0.0, -uCausticTime * 1.6 ) );
+    causticNet = clamp( causticNet * 0.74 + smoothstep( 0.62, 0.88, net2 ) * 0.42, 0.0, 1.38 );
+
+    float absorb = 1.0 - exp( -waterDepth * 2.3 );
+    vec3 tintedBed = mix( bedColor * 1.10, bedColor * uWaterAbsorbShallow * 1.48, absorb * 0.60 );
+    tintedBed = mix( tintedBed, uWaterAbsorbDeep * 0.68, absorb * absorb * 0.36 );
+
+    float upFacing = clamp( dot( normalize( normal ), vec3( 0.0, 1.0, 0.0 ) ) * 0.7 + 0.3, 0.0, 1.0 );
+    vec3 causticLight = vec3( 0.48, 0.74, 0.62 ) * causticNet * upFacing * ( 1.0 - absorb * 0.32 );
+
+    return mix( bedColor, tintedBed + causticLight * 0.54, submergeMask );
   }
 `;

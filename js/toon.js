@@ -1,6 +1,6 @@
-// 三渲二材质工具：渐变带、叶片透光、青苔附着、老化叠加、资产收尾（描边 + 阴影策略）
+// 三渲二材质工具：渐变带、叶片透光、青苔附着、老化叠加、SWE 浅水方程水体与水底实时焦散、资产收尾
 import * as THREE from 'three';
-import { TOON_BANDS, OUTLINE, PALETTE, LIGHT } from './config.js';
+import { TOON_BANDS, OUTLINE, PALETTE, LIGHT, CAMERA } from './config.js';
 import { sunDirection } from './lighting.js';
 import { gradientMap } from './textures.js';
 import {
@@ -9,24 +9,23 @@ import {
   WEATHERING_FRAG, WEATHERING_UNIFORMS
 } from './shaders/toon-shading.js';
 import { LEAF_FLUTTER_VERT, LEAF_FLUTTER_APPLY, LEAF_FLUTTER_UNIFORMS } from './shaders/leaf-vertex.js';
-import { WATER_FLOW_FRAG, WATER_FLOW_UNIFORMS } from './shaders/water-shader.js';
+import {
+  WATER_SWE_VERT_UNIFORMS, WATER_SWE_VERT_DISPLACE, WATER_SWE_VERT_CLIP,
+  WATER_FLOW_FRAG, WATER_FLOW_UNIFORMS,
+  RIVERBED_CAUSTICS_FRAG, RIVERBED_CAUSTICS_UNIFORMS
+} from './shaders/water-shader.js';
+import {
+  SWE_DOMAIN, SWE_TEX_HEIGHT, SWE_TEX_WIDTH, getSweSimulator
+} from './water/swe-simulator.js';
 import { STREAM_PATH } from './layout.js';
 import { outlineGroup, markNoOutline, shouldSkipOutline } from './outline.js';
 
-const DEG = Math.PI / 180;
-
-/**
- * 世界空间太阳光方向。
- * 直接转发 lighting.js —— 主光、叶片透光、青苔背阴、老化迎风面、光斑漂移、尘埃逆光
- * 必须共用同一个方向，改一次 LIGHT.sunAzimuthDeg 全部跟着走。
- */
 export function sunDirectionVector() {
   return sunDirection();
 }
 
 export const BANDS = TOON_BANDS;
 
-/** 给材质指定卡通色阶带（硬 / 中 / 软 / 平面） */
 export function setBanding(material, band = 'mid') {
   const steps = BANDS[band] || BANDS.mid;
   material.gradientMap = gradientMap(steps);
@@ -34,42 +33,16 @@ export function setBanding(material, band = 'mid') {
   return material;
 }
 
-// shouldSkipOutline 单一来源在 outline.js（前缀表 config.NO_OUTLINE_PREFIXES）：
-// 描边与阴影策略必须用同一条判据，两处各写一份迟早会分家。
-
-/**
- * three r160 的片元模板把 `#include <opaque_fragment>` 放在 `outgoingLight` 声明之后，
- * 而 `<lights_fragment_end>` 在它之前 —— 注入到 lights_fragment_end 会引用尚未声明的
- * outgoingLight（GLSL 报未声明标识符，program 编译失败）。统一挂在 opaque_fragment 之前。
- */
 const FRAGMENT_SURFACE_ANCHOR = '#include <opaque_fragment>';
 
-/**
- * uniform 声明与**函数定义**都必须落在片元着色器全局作用域：
- * GLSL 既不允许在 void main() 内声明 uniform，也不允许在函数体内定义函数。
- * 注入点落在 main() 体内，所以函数体走这里前置，注入点只留调用语句。
- */
 function injectGlobals(shader, declarations) {
   shader.fragmentShader = `${declarations}\n${shader.fragmentShader}`;
 }
 
-/** 把片段插到 outgoingLight 已就绪的位置（opaque_fragment 之前） */
 function injectSurface(shader, body) {
   shader.fragmentShader = shader.fragmentShader.replace(FRAGMENT_SURFACE_ANCHOR, `${body}\n${FRAGMENT_SURFACE_ANCHOR}`);
 }
 
-/**
- * 注入世界坐标 varying（兼容 instancing），供着色器内做位置相关的老化 / 青苔混合。
- *
- * 名字必须是 three 不会用到的：three 的 shadowmap chunk 自带 `varying vec3 vWorldPosition;`，
- * 曾经用 `includes('varying vec3 vWorldPos')` 做幂等判据时，字符串前缀命中它，
- * 于是凡是 receiveShadow 的材质（水面、木构…）整条注入被静默跳过 ——
- * 片元里引用 vWorldPos 直接报 undeclared identifier。
- * 现在：判据用参数对象上的显式标记，名字也改成不会撞车的 vStationWorldPos。
- *
- * 一个材质可能同时挂老化 + 青苔（woodWeathered），注入两次会重复声明 varying 与 `vwp`
- * —— 标记让第二次直接跳过。
- */
 function injectWorldPosition(shader) {
   if (shader.__stationWorldPos) return;
   shader.__stationWorldPos = true;
@@ -87,17 +60,11 @@ function injectWorldPosition(shader) {
   shader.fragmentShader = `varying vec3 vStationWorldPos;\n${shader.fragmentShader}`;
 }
 
-/** 把 uniform 挂到材质上，并保留引用以便运行时微调 */
 function bindUniforms(material, uniforms) {
-  // 合并而不是替换：一个材质可能同时注入透光 / 青苔 / 老化 / 微振 / 水流，
-  // 直接赋值会让先注入的那批 uniform 引用丢失（tuneMaterial 之后找不到键）。
-  // 必须新建对象：clone() 是 userData 浅拷贝，父子共用同一个 dict，
-  // 原地 Object.assign 会把父材质的 uniform 表一起改掉。
   material.userData.uniforms = Object.assign({}, material.userData.uniforms, uniforms);
   return uniforms;
 }
 
-/** 运行时微调已注入的 uniform */
 export function tuneMaterial(material, key, value) {
   const uniforms = material.userData.uniforms;
   if (!uniforms || !uniforms[key]) return false;
@@ -107,7 +74,6 @@ export function tuneMaterial(material, key, value) {
   return true;
 }
 
-/** 叶片次表面透光（逆光叶隙）：颜色/强度/硬度全部由 uniform 驱动，主光色取自 LIGHT.sunColor */
 export function applyLeafTranslucency(material, { color = 0x9fd6a0, strength = 0.4, power = 2.6 } = {}) {
   const sun = sunDirectionVector();
   const uniforms = bindUniforms(material, {
@@ -133,7 +99,6 @@ export function applyLeafTranslucency(material, { color = 0x9fd6a0, strength = 0
   return material;
 }
 
-/** 青苔附着：仅在构件底部与背阴面出现，不泛滥 */
 export function applyMossAttachment(material, { color = PALETTE.moss, height = 0, band = 0.55, amount = 0.5 } = {}) {
   const uniforms = bindUniforms(material, {
     uMossColor: { value: new THREE.Color(color) },
@@ -154,7 +119,6 @@ export function applyMossAttachment(material, { color = PALETTE.moss, height = 0
   return material;
 }
 
-/** 统一老化规则：底部与迎风面优先老化，顶面轻微积尘 */
 export function applyWeathering(material, { wear = PALETTE.toriiLacquerLoss, dust = PALETTE.soilWet, start = 0, band = 0.6, wearAmount = 0.5, dustAmount = 0.22 } = {}) {
   const uniforms = bindUniforms(material, {
     uWearColor: { value: new THREE.Color(wear) },
@@ -176,7 +140,6 @@ export function applyWeathering(material, { wear = PALETTE.toriiLacquerLoss, dus
   return material;
 }
 
-/** 暗部抬升 / 明暗交界柔化：避免卡通分层在暗侧糊死 */
 export function applyShadowLift(material, { lift = 0.14, knee = 0.42 } = {}) {
   const uniforms = bindUniforms(material, {
     uShadowLift: { value: lift },
@@ -184,7 +147,6 @@ export function applyShadowLift(material, { lift = 0.14, knee = 0.42 } = {}) {
   });
   composeBeforeCompile(material, (shader) => {
     Object.assign(shader.uniforms, uniforms);
-    // 这两个 uniform 原先只挂进 shader.uniforms、没在 GLSL 里声明，着色器一编译就报未声明标识符
     injectGlobals(shader, `
       uniform float uShadowLift;
       uniform float uShadowKnee;
@@ -199,11 +161,6 @@ export function applyShadowLift(material, { lift = 0.14, knee = 0.42 } = {}) {
   return material;
 }
 
-/**
- * 把新的注入串到已有的 onBeforeCompile 之后。
- * 一个材质只有一个 onBeforeCompile：透光 / 青苔 / 老化 / 微振 / 水流要能叠加，
- * 否则后调用者会静默覆盖前者（叶片透光被微振吃掉，表现为叶片不再逆光发亮）。
- */
 function composeBeforeCompile(material, inject) {
   const previous = material.onBeforeCompile;
   material.onBeforeCompile = (shader, renderer) => {
@@ -212,13 +169,8 @@ function composeBeforeCompile(material, inject) {
   };
 }
 
-/** 已启用 GPU 叶片微振的材质（animations/tree-sway.js 逐帧推进它们的 uTime / uGust） */
 export const LEAF_FLUTTER_MATERIALS = [];
 
-/**
- * 叶片微振：簇内每一片叶的极小幅抖动（GPU 侧，与 CPU 的构件组摆动叠加）。
- * 只对 InstancedMesh 生效（shader 内 USE_INSTANCING 判定）。
- */
 export function applyLeafFlutter(material, { amplitude = 0.012, period = 3.4 } = {}) {
   const uniforms = bindUniforms(material, {
     uTime: { value: 0 },
@@ -228,7 +180,6 @@ export function applyLeafFlutter(material, { amplitude = 0.012, period = 3.4 } =
   });
   composeBeforeCompile(material, (shader) => {
     Object.assign(shader.uniforms, uniforms);
-    // uniform 与函数定义都只能出现在全局作用域（顶点着色器侧），注入点只留调用
     shader.vertexShader = `${LEAF_FLUTTER_UNIFORMS}\n${LEAF_FLUTTER_VERT}\n${shader.vertexShader}`;
     shader.vertexShader = shader.vertexShader.replace(
       '#include <begin_vertex>',
@@ -242,7 +193,6 @@ export function applyLeafFlutter(material, { amplitude = 0.012, period = 3.4 } =
   return material;
 }
 
-/** 溪流下游方向的水平单位向量（由 STREAM_PATH 首末算，整条溪近似直线） */
 export function streamFlowDirection() {
   const a = STREAM_PATH[0];
   const b = STREAM_PATH[STREAM_PATH.length - 1];
@@ -252,14 +202,38 @@ export function streamFlowDirection() {
   return new THREE.Vector2(dx / len, dz / len);
 }
 
-/** 已启用水流片元着色的材质（animations/stream-flow.js 逐帧推进它们的 uTime） */
 export const WATER_FLOW_MATERIALS = [];
+export const RIVERBED_CAUSTIC_MATERIALS = [];
 
-/**
- * 水面颜色流：顺流推进的焦散波光 + 漩涡回流 + 叠瀑白沫。
- * 几何波由 animations/stream-flow.js 在 CPU 上做（见 docs/ASSET_INDEX.md §59 / §61）。
- */
+export function applySubmergedCaustics(material) {
+  const sun = sunDirectionVector();
+  const sim = getSweSimulator();
+  const uniforms = bindUniforms(material, {
+    uCausticTime: { value: 0 },
+    uCausticLightDir: { value: sun.clone() },
+    uWaterAbsorbShallow: { value: new THREE.Color(PALETTE.waterShallow) },
+    uWaterAbsorbDeep: { value: new THREE.Color(PALETTE.waterDeep) },
+    uSweTex: { value: sim.texture },
+    uSweDomainMin: { value: new THREE.Vector2(SWE_DOMAIN.xMin, SWE_DOMAIN.zMin) },
+    uSweDomainMax: { value: new THREE.Vector2(SWE_DOMAIN.xMax, SWE_DOMAIN.zMax) },
+    uSweTexel: { value: new THREE.Vector2(1 / SWE_TEX_WIDTH, 1 / SWE_TEX_HEIGHT) }
+  });
+  composeBeforeCompile(material, (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    injectWorldPosition(shader);
+    injectGlobals(shader, `${RIVERBED_CAUSTICS_UNIFORMS}\n${RIVERBED_CAUSTICS_FRAG}`);
+    injectSurface(shader, `{
+        outgoingLight = applyRiverbedCaustics( outgoingLight, vStationWorldPos, normal );
+      }`);
+    material.userData.shader = shader;
+  });
+  material.userData.submergedCaustics = true;
+  if (!RIVERBED_CAUSTIC_MATERIALS.includes(material)) RIVERBED_CAUSTIC_MATERIALS.push(material);
+  return material;
+}
+
 export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength = 1, overlayMode = 0 } = {}) {
+  const sim = getSweSimulator();
   const uniforms = bindUniforms(material, {
     uTime: { value: 0 },
     uFlowSpeed: { value: speed },
@@ -268,17 +242,37 @@ export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength
     uDeepColor: { value: new THREE.Color(PALETTE.waterDeep) },
     uFlowScale: { value: scale },
     uFlowStrength: { value: strength },
-    uOverlayMode: { value: overlayMode }
+    uOverlayMode: { value: overlayMode },
+    uSweTex: { value: sim.texture },
+    uSweDomainMin: { value: new THREE.Vector2(SWE_DOMAIN.xMin, SWE_DOMAIN.zMin) },
+    uSweDomainMax: { value: new THREE.Vector2(SWE_DOMAIN.xMax, SWE_DOMAIN.zMax) },
+    uSweTexel: { value: new THREE.Vector2(1 / SWE_TEX_WIDTH, 1 / SWE_TEX_HEIGHT) },
+    uSweDisplaceScale: { value: overlayMode === 0 ? 1.15 : 0.0 },
+    tRefractionColor: { value: sim.refractionColorTex },
+    tRefractionDepth: { value: sim.refractionDepthTex },
+    uHasRefraction: { value: 0.0 },
+    uCameraNear: { value: CAMERA.near },
+    uCameraFar: { value: CAMERA.far },
+    uExtinctionDensity: { value: 3.2 },
+    uShoreFoamThreshold: { value: 0.052 }
   });
   composeBeforeCompile(material, (shader) => {
     Object.assign(shader.uniforms, uniforms);
     injectWorldPosition(shader);
     if (!shader.__waterLocalUv) {
       shader.__waterLocalUv = true;
-      shader.vertexShader = `varying vec2 vWaterLocalUv;\n${shader.vertexShader}`;
+      shader.vertexShader = `varying vec2 vWaterLocalUv;\n${WATER_SWE_VERT_UNIFORMS}\n${shader.vertexShader}`;
       shader.vertexShader = shader.vertexShader.replace(
         '#include <uv_vertex>',
         `#include <uv_vertex>\nvWaterLocalUv = uv;`
+      );
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>\n${WATER_SWE_VERT_DISPLACE}`
+      );
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <project_vertex>',
+        `#include <project_vertex>\n${WATER_SWE_VERT_CLIP}`
       );
       shader.fragmentShader = `varying vec2 vWaterLocalUv;\n${shader.fragmentShader}`;
     }
@@ -296,25 +290,6 @@ export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength
   return material;
 }
 
-/**
- * 资产收尾：阴影策略 + 逐网格独立描边。
- *
- * 阴影与描边是两件事，旧版本用 shouldSkipOutline 同时决定两者，于是
- * 「leafSheet* 不描边」顺带把 js/tree-kit.js 里 `instanced.castShadow = true`
- * 静默改回 false —— 树冠不再投影，而叶隙投影正是 S7.6 斑驳光斑的物理来源。
- * 现在：不描边只看材质名 / 不透明度；投不投影只看资产层的显式决定（userData.noCast /
- * userData.noReceive）与材质是否是加色面片。
- *
- * @param {THREE.Object3D} root 资产根
- * @param {object} options shadowPolicy:
- *   'fill'（默认，别名 'both'）资产层决定优先：标了 noCast 的网格（落叶薄片、苔壳、锈斑、
- *       玻璃、水面、加色光斑…）永不投影，未写决定的构件（树干、枝条、灌木茎、道具主体）
- *       一律投影 + 受光。这样既不会漏掉构件阴影，也不会覆盖资产层的例外。
- *   'cast'    只投影不受光（仍尊重 noCast）
- *   'receive' 整组只受光（底座 / 地形这类整块面）
- *   'none'    既不投影也不受光
- *   'keep'    完全沿用资产层写法，组装层不改动
- */
 export function finishAsset(root, options = {}) {
   const {
     shadowPolicy = 'fill',
@@ -328,7 +303,6 @@ export function finishAsset(root, options = {}) {
 
   root.traverse((node) => {
     if (!node.isMesh) return;
-    // 描边壳体不参与阴影：壳体自己投影会在构件外侧糊出一份实心影
     if (node.userData.isOutline) return;
     const optedOutCast = node.userData.noCast === true || isOverlayMaterial(node.material);
     const optedOutReceive = node.userData.noReceive === true;
@@ -347,7 +321,7 @@ export function finishAsset(root, options = {}) {
         break;
       case 'keep':
         break;
-      default: // 'fill' / 'both'
+      default:
         node.castShadow = !optedOutCast;
         node.receiveShadow = !optedOutReceive;
     }
@@ -361,7 +335,6 @@ export function finishAsset(root, options = {}) {
   return outlineGroup(root, { thickness, auto, maxThickness, key: outlineKey, color: outlineColor });
 }
 
-/** 材质本身是否不该参与阴影：加色面片（光斑 / 灯罩发光 / 尘埃）与几乎全透的膜 */
 export function isOverlayMaterial(material) {
   if (!material) return true;
   if (material.blending === THREE.AdditiveBlending) return true;
