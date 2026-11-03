@@ -274,6 +274,7 @@ export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength
     uFlowStrength: { value: strength },
     uOverlayMode: { value: overlayMode },
     uWaterSunDir: { value: sun.clone() },
+    uWaterDayFactor: { value: 1.0 },
     uSweTex: { value: sim.texture },
     uHydroTex: { value: sim.obstacleTex },
     uSweDomainMin: { value: new THREE.Vector2(SWE_DOMAIN.xMin, SWE_DOMAIN.zMin) },

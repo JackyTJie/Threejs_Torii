@@ -296,44 +296,52 @@ function shadeLit(material, nx, ny, nz, u, v, wxWorld, wy, wzWorld, out) {
     mg = mg * (1 + 0.16 * footTraffic) + 0.024 * footTraffic;
     mb = mb * (1 + 0.18 * footTraffic) + 0.028 * footTraffic;
 
-    // 缝隙边缘：积土与细密深绿苔点
-    const edgeCrevice = Math.min(1, (1 - upTread) * 0.82 + Math.max(0, Math.min(1, (distFromCenter - 0.42) / 0.66)) * 0.68);
-    const streamSideBoost = 0.58 + 0.62 * Math.max(0, Math.min(1, (1.4 - (wxWorld - pathCx)) / 2.6));
-    const creviceSoilMask = Math.min(0.78, edgeCrevice * streamSideBoost * (0.52 + 0.48 * grain) * (1 - footTraffic * 0.82));
-    mr = mr * (1 - creviceSoilMask * 0.54) + 0.19 * (creviceSoilMask * 0.54);
-    mg = mg * (1 - creviceSoilMask * 0.54) + 0.16 * (creviceSoilMask * 0.54);
-    mb = mb * (1 - creviceSoilMask * 0.54) + 0.13 * (creviceSoilMask * 0.54);
+    // 缝隙边缘与靠溪/靠路边连片青苔（靠近溪流最厚连片、靠近路边次之、路正中间稀少）
+    const dxPath = wxWorld - pathCx;
+    const leftStreamZone = 1 - Math.max(0, Math.min(1, (dxPath + 1.30) / 1.18));
+    const rightEdgeZone = Math.max(0, Math.min(1, (dxPath - 0.25) / 1.00)) * 0.82;
+    const riserAndJointZone = (1 - upTread) * 0.78;
+    const sheetMacro = fbm2(wxWorld * 1.65, wzWorld * 1.65) * 0.65 + fbm2(wxWorld * 3.8 + 4.1, wzWorld * 3.8 + 7.9) * 0.35;
+    const spatialDist = Math.max(leftStreamZone * 1.08, Math.max(rightEdgeZone, riserAndJointZone)) * (1 - footTraffic * 0.88);
+    const sheetField = spatialDist * (0.55 + 0.65 * sheetMacro);
 
-    const microDots = hash21(Math.floor(wxWorld * 120.0), Math.floor(wzWorld * 120.0));
-    const mossDotMask = Math.max(0, Math.min(1, (creviceSoilMask - 0.32) / 0.43)) * Math.max(0, Math.min(1, (microDots * 0.65 + grain * 0.35 - 0.38) / 0.44));
-    mr = mr * (1 - mossDotMask * 0.74) + (0.08 + 0.07 * microDots) * (mossDotMask * 0.74);
-    mg = mg * (1 - mossDotMask * 0.74) + (0.14 + 0.10 * microDots) * (mossDotMask * 0.74);
-    mb = mb * (1 - mossDotMask * 0.74) + (0.06 + 0.05 * microDots) * (mossDotMask * 0.74);
+    const soilSubstrateMask = Math.min(0.84, Math.max(0, (sheetField - 0.18) / 0.30));
+    mr = mr * (1 - soilSubstrateMask * 0.68) + 0.19 * (soilSubstrateMask * 0.68);
+    mg = mg * (1 - soilSubstrateMask * 0.68) + 0.16 * (soilSubstrateMask * 0.68);
+    mb = mb * (1 - soilSubstrateMask * 0.68) + 0.13 * (soilSubstrateMask * 0.68);
+
+    const sheetCoreMask = Math.max(0, Math.min(1, (sheetField - 0.28) / 0.28));
+    const microDots = hash21(Math.floor(wxWorld * 135.0), Math.floor(wzWorld * 135.0));
+    const denseGreenDots = Math.max(0, Math.min(1, (microDots * 0.55 + grain * 0.45 - 0.10) / 0.35));
+    const mossSheetCov = Math.min(0.86, sheetCoreMask * (0.54 + 0.46 * denseGreenDots) * 0.88);
+    mr = mr * (1 - mossSheetCov) + (0.07 + 0.10 * microDots) * mossSheetCov;
+    mg = mg * (1 - mossSheetCov) + (0.14 + 0.14 * microDots) * mossSheetCov;
+    mb = mb * (1 - mossSheetCov) + (0.06 + 0.06 * microDots) * mossSheetCov;
 
     // 积水层：清晨与雨后台阶凹陷处积水反射天空与鸟居
     const dishField = fbm2(wxWorld * 2.4, wzWorld * 3.2);
-    const puddleMask = footTraffic * Math.max(0, Math.min(1, (dishField - (0.56 - weatherWetness * 0.18)) / 0.20)) * upTread;
+    const puddleMask = footTraffic * Math.max(0, Math.min(1, (dishField - (0.56 - weatherWetness * 0.18)) / 0.20)) * upTread * (1 - soilSubstrateMask * 0.8);
     if (puddleMask > 0.01) {
       const toriiProx = Math.exp(-Math.pow((wzWorld - 1.5) / 5.5, 2.0));
-      const pReflR = 0.34 * (1 - toriiProx * 0.45) + 0.68 * (toriiProx * 0.45);
-      const pReflG = 0.46 * (1 - toriiProx * 0.45) + 0.18 * (toriiProx * 0.45);
-      const pReflB = 0.48 * (1 - toriiProx * 0.45) + 0.09 * (toriiProx * 0.45);
+      const pReflR = 0.26 * (1 - toriiProx * 0.45) + 0.62 * (toriiProx * 0.45);
+      const pReflG = 0.36 * (1 - toriiProx * 0.45) + 0.16 * (toriiProx * 0.45);
+      const pReflB = 0.38 * (1 - toriiProx * 0.45) + 0.08 * (toriiProx * 0.45);
       const pm = puddleMask * (0.45 + 0.35 * weatherWetness);
       mr = mr * (1 - pm) + pReflR * pm;
       mg = mg * (1 - pm) + pReflG * pm;
       mb = mb * (1 - pm) + pReflB * pm;
     }
   } else if (toriiMode >= 3.5) {
-    // 3) 独立青苔斑块（mossPatch / mossWet / mossDamp）：底层灰褐腐殖土 + 上层细密深绿苔点 + 粗糙哑光
-    const dot1 = valueNoise(wxWorld * 14.0, wzWorld * 14.0);
-    const dot2 = hash21(Math.floor(wxWorld * 95.0), Math.floor(wzWorld * 95.0));
-    const soilUnder = Math.max(0, Math.min(1, 0.75 - dot1 * 0.55 - ny * 0.15));
-    const earthR = 0.17 + 0.08 * dot1, earthG = 0.14 + 0.07 * dot1, earthB = 0.11 + 0.05 * dot1;
-    const mossR = 0.07 + 0.09 * dot2, mossG = 0.13 + 0.13 * dot2, mossB = 0.06 + 0.06 * dot2;
-    const mixEarth = Math.min(0.76, soilUnder * 0.55 + (1 - dot2) * 0.32);
-    mr = mossR * (1 - mixEarth) + earthR * mixEarth;
-    mg = mossG * (1 - mixEarth) + earthG * mixEarth;
-    mb = mossB * (1 - mixEarth) + earthB * mixEarth;
+    // 3) 独立片状青苔（灰褐基底上密集绿色小圆点连成大片青苔）
+    const sheetMacro = fbm2(wxWorld * 3.2, wzWorld * 3.2);
+    const dot1 = valueNoise(wxWorld * 46.0, wzWorld * 46.0);
+    const dot2 = hash21(Math.floor(wxWorld * 120.0), Math.floor(wzWorld * 120.0));
+    const earthR = 0.16 + 0.08 * dot1, earthG = 0.13 + 0.07 * dot1, earthB = 0.10 + 0.06 * dot1;
+    const mossR = 0.07 + 0.11 * dot2, mossG = 0.14 + 0.16 * dot2, mossB = 0.05 + 0.07 * dot2;
+    const dotCluster = Math.min(0.90, Math.max(0, Math.min(1, (dot1 * 0.5 + dot2 * 0.5 - 0.08) / 0.28)) * (0.78 + 0.22 * sheetMacro));
+    mr = earthR * (1 - dotCluster) + mossR * dotCluster;
+    mg = earthG * (1 - dotCluster) + mossG * dotCluster;
+    mb = earthB * (1 - dotCluster) + mossB * dotCluster;
   }
 
   out[0] = srgbToLinear(mr) * lr;
@@ -449,13 +457,26 @@ function shadeLit(material, nx, ny, nz, u, v, wxWorld, wy, wzWorld, out) {
 
       const approxCx = -3.25 + 0.58 * Math.sin(wzWorld * 0.36 + 0.5) + 0.28 * Math.cos(wzWorld * 0.21 - 0.8);
       const bankDist = Math.abs(wxWorld - approxCx);
-      const bankWaveMask = Math.max(0, Math.min(1, (bankDist - 0.30) / 0.56));
-      const stoneWaveMask = Math.min(1, hz.splash * 1.4 + hz.splitShear * 1.1 + Math.abs(hz.vorticity) * 1.1);
+      const isPuddle = (uniforms.uFlowSpeed && uniforms.uFlowSpeed.value <= 0.08) ? 1.0 : 0.0;
+      const inStream = (1 - isPuddle) * (1 - Math.max(0, Math.min(1, (bankDist - 1.08) / 0.37)));
+      const bankWaveMask = Math.max(0, Math.min(1, (bankDist - 0.28) / 0.56)) * inStream;
+      const stoneWaveMask = Math.min(1, hz.splash * 1.4 + hz.splitShear * 1.1 + Math.abs(hz.vorticity) * 1.1) * inStream;
       const nearBankOrRock = Math.max(bankWaveMask, stoneWaveMask);
 
-      const rippleAmp = 0.045 + 0.14 * Math.min(1, (hz.speed - 0.55) / 1.4) + 0.12 * nearBankOrRock;
-      const wnx = nx + Math.sin(wxWorld * 14.5 - hz.dirX * simSeconds * 6.0 + wzWorld * 8.2) * rippleAmp;
-      const wnz = nz + Math.cos(wxWorld * 11.8 - wzWorld * 14.4 - simSeconds * 5.8) * rippleAmp;
+      // 5 组非共线方向动态小水波交叉干涉（消除平行白色条带，形成灵动跳跃的菱形碎钻波光）
+      const flowWarp = (fbm2(wxWorld * 3.6, wzWorld * 2.4 - simSeconds * 1.6) - 0.48) * 3.8;
+      const w1 = Math.sin((wxWorld * 0.88 + wzWorld * 0.47) * 22.0 - simSeconds * 6.8 + flowWarp);
+      const w2 = Math.sin((-wxWorld * 0.74 + wzWorld * 0.67) * 27.5 - simSeconds * 8.1 - flowWarp * 0.85);
+      const w3 = Math.sin((wxWorld * 0.36 - wzWorld * 0.93) * 33.0 + simSeconds * 9.4 + flowWarp * 1.1);
+      const w4 = Math.sin((-wxWorld * 0.95 - wzWorld * 0.31) * 39.5 - simSeconds * 10.7 - flowWarp * 0.9);
+      const w5 = Math.sin((wxWorld * 0.53 + wzWorld * 0.85) * 46.0 + simSeconds * 12.1 + flowWarp * 0.7);
+      const multiWaveSum = w1 * 0.24 + w2 * 0.22 + w3 * 0.20 + w4 * 0.18 + w5 * 0.16;
+
+      const rippleAmp = isPuddle > 0.5
+        ? 0.035
+        : (0.045 + 0.14 * Math.min(1, (hz.speed - 0.55) / 1.4) + 0.12 * nearBankOrRock);
+      const wnx = nx + (w1 * 0.45 - w2 * 0.35 + w4 * 0.25) * rippleAmp;
+      const wnz = nz + (w2 * 0.45 - w3 * 0.35 + w5 * 0.25) * rippleAmp;
       const wlen = Math.hypot(wnx, ny, wnz) || 1;
       const mnx = wnx / wlen, mny = ny / wlen, mnz = wnz / wlen;
 
@@ -467,10 +488,12 @@ function shadeLit(material, nx, ny, nz, u, v, wxWorld, wy, wzWorld, out) {
       const ry = Math.max(0.08, Math.abs(2 * dotVN * mny - vyN));
       const rz = 2 * dotVN * mnz - vzN;
 
+      const sunElevFactor = Math.max(0.12, Math.min(1.0, toSun.y * 1.35));
+      const effSunLit = sunLit * sunElevFactor;
       const foliage = fbm2(wxWorld * 1.4 + rx * 2.5, wzWorld * 1.4 + rz * 2.5);
-      let envR = 0.08 + 0.24 * foliage * (0.4 + 0.6 * sunLit);
-      let envG = 0.22 + 0.38 * foliage * (0.4 + 0.6 * sunLit);
-      let envB = 0.12 + 0.18 * foliage * (0.4 + 0.6 * sunLit);
+      let envR = 0.08 + 0.24 * foliage * (0.4 + 0.6 * effSunLit);
+      let envG = 0.22 + 0.38 * foliage * (0.4 + 0.6 * effSunLit);
+      let envB = 0.12 + 0.18 * foliage * (0.4 + 0.6 * effSunLit);
 
       const tx = 0.15 - wxWorld, ty = 3.85 - wy, tz = -0.65 - wzWorld;
       const tlen = Math.hypot(tx, ty, tz) || 1;
@@ -483,37 +506,34 @@ function shadeLit(material, nx, ny, nz, u, v, wxWorld, wy, wzWorld, out) {
         envB = envB * (1 - toriiBand * 0.75) + 0.09 * toriiBand * 0.75;
       }
 
-      // 顺应岸线与绕石流线的细长弧形小水波（消除圆点阵列感）
-      const flowWarp = fbm2(wxWorld * 3.8, wzWorld * 2.2 - simSeconds * 1.4);
-      const bankRippleWave = Math.sin(bankDist * 34.0 - wzWorld * 6.5 - simSeconds * 5.2 + flowWarp * 6.0);
-      const stoneRippleWave = Math.sin(wzWorld * 20.0 + wxWorld * 8.0 - simSeconds * 6.8 + flowWarp * 7.5);
-      const ribbonCrest = Math.max(0, Math.min(1, (bankRippleWave * bankWaveMask + stoneRippleWave * stoneWaveMask * 0.85 - 0.58) / 0.36));
-      const bankRockShimmer = nearBankOrRock * ribbonCrest * (0.38 + 0.62 * Math.pow(1 - ndv, 1.8));
+      const diamondSparkle = Math.max(0, Math.min(1, (multiWaveSum - 0.34) / 0.38)) * (1 - isPuddle);
+      const bankRockShimmer = nearBankOrRock * diamondSparkle * (0.28 + 0.52 * Math.pow(1 - ndv, 1.8));
 
       const foamNoise = fbm2(wxWorld * 9.5 - hz.dirX * simSeconds * 4.5, wzWorld * 3.8 - hz.dirZ * simSeconds * 4.5);
-      const splashFoam = Math.min(0.76, (hz.splash * 0.95 + hz.cascadeMask * 0.48) * (0.45 + 0.62 * foamNoise));
-      const splitChevron = hz.splitShear * Math.max(0, Math.sin(wxWorld * 22.0 + wzWorld * 14.0 - simSeconds * 9.5)) * 0.34;
-      const eddySwirl = Math.abs(hz.vorticity) * Math.max(0, Math.sin(Math.atan2(wzWorld, wxWorld) * 4.0 + simSeconds * 4.2 + foamNoise * 4.0)) * 0.36;
-      const whitewater = Math.min(0.76, splashFoam + splitChevron + eddySwirl + bankRockShimmer * 0.28);
+      const splashFoam = Math.min(0.38, (hz.splash * 0.52 + hz.cascadeMask * 0.28) * (0.35 + 0.55 * foamNoise)) * inStream;
+      const eddySwirl = Math.abs(hz.vorticity) * inStream * Math.max(0, Math.sin(Math.atan2(wzWorld, wxWorld) * 4.0 + simSeconds * 4.2 + foamNoise * 4.0)) * 0.22;
+      const whitewater = Math.min(0.38, (splashFoam + eddySwirl) * (0.32 + 0.68 * effSunLit));
 
       const hx = vxN + toSun.x, hy = vyN + toSun.y, hzSun = vzN + toSun.z;
       const hlen = Math.hypot(hx, hy, hzSun) || 1;
       const ndh = Math.max(0, (mnx * hx + mny * hy + mnz * hzSun) / hlen);
-      const glint = (Math.pow(ndh, 32) * 1.15 + ribbonCrest * (0.55 + 0.95 * nearBankOrRock)) * (0.35 + 0.65 * sunLit);
+      const glint = (Math.pow(ndh, 42) * 0.85 + ( diamondSparkle * (0.45 + 0.85 * nearBankOrRock) + bankRockShimmer * 0.45 )) * (0.22 + 0.78 * effSunLit);
 
       const wr = sc.r * 0.65 + dc.r * 0.35;
       const wg = sc.g * 0.65 + dc.g * 0.35;
       const wb = sc.b * 0.65 + dc.b * 0.35;
-      const shadeMod = 0.68 + 0.42 * sunLit;
+      const shadeMod = 0.62 + 0.42 * effSunLit;
 
-      const baseR = (srgbToLinear(wr * (1 - fresnel) + envR * fresnel) + glint * 0.95) * shadeMod;
-      const baseG = (srgbToLinear(wg * (1 - fresnel) + envG * fresnel) + glint * 0.98) * shadeMod;
-      const baseB = (srgbToLinear(wb * (1 - fresnel) + envB * fresnel) + glint * 0.88) * shadeMod;
+      const baseR = (srgbToLinear(wr * (1 - fresnel) + envR * fresnel) + glint * 0.90) * shadeMod;
+      const baseG = (srgbToLinear(wg * (1 - fresnel) + envG * fresnel) + glint * 0.94) * shadeMod;
+      const baseB = (srgbToLinear(wb * (1 - fresnel) + envB * fresnel) + glint * 0.86) * shadeMod;
 
-      out[0] = baseR * (1 - whitewater * 0.65) + srgbToLinear(0.84) * (whitewater * 0.65);
-      out[1] = baseG * (1 - whitewater * 0.65) + srgbToLinear(0.94) * (whitewater * 0.65);
-      out[2] = baseB * (1 - whitewater * 0.65) + srgbToLinear(0.92) * (whitewater * 0.65);
-      out[3] = Math.min(0.76, (0.18 + fresnel * 0.34 + whitewater * 0.36 + Math.min(0.28, glint * 0.34)) * (0.85 + 0.15 * slopeTilt));
+      out[0] = baseR * (1 - whitewater * 0.55) + srgbToLinear(0.80) * (whitewater * 0.55);
+      out[1] = baseG * (1 - whitewater * 0.55) + srgbToLinear(0.90) * (whitewater * 0.55);
+      out[2] = baseB * (1 - whitewater * 0.55) + srgbToLinear(0.88) * (whitewater * 0.55);
+      out[3] = isPuddle > 0.5
+        ? Math.min(0.58, 0.22 + fresnel * 0.32 + Math.min(0.18, glint * 0.25))
+        : Math.min(0.74, (0.18 + fresnel * 0.32 + whitewater * 0.28 + Math.min(0.24, glint * 0.30)) * (0.85 + 0.15 * slopeTilt));
     }
   }
 
@@ -830,9 +850,9 @@ function evalPhysicalSkyAndMountains(rx, ry, rz, outRgb) {
     sb = sb * (1 - blueHourW * 0.88) + bb * (blueHourW * 0.88);
   }
   if (nightW > 0.001) {
-    const nr = 0.03 * (1 - rayGrad) + 0.09 * rayGrad;
-    const ng = 0.06 * (1 - rayGrad) + 0.14 * rayGrad;
-    const nb = 0.12 * (1 - rayGrad) + 0.22 * rayGrad;
+    const nr = 0.004 * (1 - rayGrad) + 0.012 * rayGrad;
+    const ng = 0.009 * (1 - rayGrad) + 0.025 * rayGrad;
+    const nb = 0.028 * (1 - rayGrad) + 0.068 * rayGrad;
     sr = sr * (1 - nightW) + nr * nightW;
     sg = sg * (1 - nightW) + ng * nightW;
     sb = sb * (1 - nightW) + nb * nightW;
@@ -844,54 +864,70 @@ function evalPhysicalSkyAndMountains(rx, ry, rz, outRgb) {
     const sz = rz / (Math.abs(ry) + 0.35);
     const galAxis = sx * 0.75 + sz * 0.65 - 0.2;
     const galBand = Math.exp(-galAxis * galAxis * 3.8) * fbm2(sx * 2.8, sz * 2.8);
-    sr += 0.14 * galBand * nightW;
-    sg += 0.18 * galBand * nightW;
-    sb += 0.32 * galBand * nightW;
+    sr += 0.018 * galBand * nightW;
+    sg += 0.032 * galBand * nightW;
+    sb += 0.075 * galBand * nightW;
     const starSeed = hash21(Math.floor(sx * 90), Math.floor(sz * 90));
     if (starSeed > 0.97) {
       const sbright = ((starSeed - 0.97) / 0.03) * nightW;
-      sr += 0.85 * sbright; sg += 0.90 * sbright; sb += 1.0 * sbright;
+      sr += 0.55 * sbright; sg += 0.65 * sbright; sb += 0.85 * sbright;
     }
   }
 
   // 双层程序化体积云
-  if (elev > -0.02) {
+  if (elev > 0.02) {
     const spx = rx / Math.max(0.14, elev + 0.16);
     const spz = rz / Math.max(0.14, elev + 0.16);
     const c1 = fbm2(spx * 0.32 + simSeconds * 0.02, spz * 0.32);
     const cloudMask = Math.max(0, Math.min(0.75, (c1 - 0.48) * 1.8));
-    const cR = goldenW > 0.2 ? 0.95 : nightW > 0.5 ? 0.18 : 0.78;
-    const cG = goldenW > 0.2 ? 0.62 : nightW > 0.5 ? 0.25 : 0.84;
-    const cB = goldenW > 0.2 ? 0.42 : nightW > 0.5 ? 0.36 : 0.86;
+    const cR = goldenW > 0.2 ? 0.95 : nightW > 0.5 ? 0.012 : 0.72;
+    const cG = goldenW > 0.2 ? 0.62 : nightW > 0.5 ? 0.024 : 0.78;
+    const cB = goldenW > 0.2 ? 0.42 : nightW > 0.5 ? 0.055 : 0.82;
     sr = sr * (1 - cloudMask) + cR * cloudMask;
     sg = sg * (1 - cloudMask) + cG * cloudMask;
     sb = sb * (1 - cloudMask) + cB * cloudMask;
   }
 
-  // 5层大气透视程序化远山 + 视差滚动 + 远山千本鸟居微光
+  // 8层深邃群山密林与深夜黑色山川剪影
   const azRay = Math.atan2(rx, -rz);
-  const hzR = sr * 0.75 + 0.06, hzG = sg * 0.75 + 0.08, hzB = sb * 0.75 + 0.08;
-  for (let layer = 0; layer < 5; layer++) {
+  const hzR = sr * 0.70, hzG = sg * 0.70, hzB = sb * 0.70;
+  for (let layer = 0; layer < 8; layer++) {
     const fl = layer;
-    const parallax = camera.position.x * (0.006 + fl * 0.0085);
-    const theta = azRay + parallax + fl * 1.37;
-    const baseH = 0.26 - fl * 0.032;
-    const rNoise = fbm2(theta * (1.8 + fl * 0.85), fl * 3.7);
-    const mtnTop = baseH + (0.055 - fl * 0.005) * Math.sin(theta * 2.4 + fl * 1.9) + (0.075 - fl * 0.006) * (rNoise - 0.5);
+    const nearFactor = fl / 7.0;
+    const parallax = camera.position.x * (0.005 + fl * 0.0065);
+    const theta = azRay + parallax + fl * 1.19;
+    const baseH = 0.44 - fl * 0.044;
+    const rNoise = fbm2(theta * (1.6 + fl * 0.68), fl * 3.7);
+    const spire = (valueNoise(theta * (75 + fl * 32), fl * 9.3) - 0.45) * 0.018 * Math.pow(nearFactor, 0.72);
+    const mtnTop = baseH
+      + (0.066 - fl * 0.004) * Math.sin(theta * 2.3 + fl * 1.7)
+      + (0.045 - fl * 0.003) * Math.cos(theta * 4.7 - fl * 1.1)
+      + (0.092 - fl * 0.005) * (rNoise - 0.5)
+      + spire;
     if (elev < mtnTop) {
-      const nearFactor = fl / 4.0;
-      const aerialMix = 0.82 * (1 - nearFactor) + 0.18 * nearFactor;
-      let lr = 0.08 * (1 - aerialMix) + hzR * aerialMix;
-      let lg = 0.17 * (1 - aerialMix) + hzG * aerialMix;
-      let lb = 0.11 * (1 - aerialMix) + hzB * aerialMix;
-      if (layer >= 2) {
-        const gx = theta * 120 + fl * 19;
-        const gy = (mtnTop - elev) * 280;
+      const aerialMix = 0.68 * (1 - nearFactor) + 0.10 * nearFactor;
+      const forestShade = 0.4 + 0.6 * rNoise;
+      const dayR = (0.035 * forestShade) * (1 - aerialMix) + hzR * aerialMix;
+      const dayG = (0.095 * forestShade) * (1 - aerialMix) + hzG * aerialMix;
+      const dayB = (0.058 * forestShade) * (1 - aerialMix) + hzB * aerialMix;
+
+      // 夜间黑色山川剪影（远层微带极暗深蓝夜雾分界，近层纯正墨黑剪影）
+      const nightSilR = 0.003 * (1 - nearFactor);
+      const nightSilG = 0.006 * (1 - nearFactor);
+      const nightSilB = 0.018 * (1 - nearFactor) + 0.002;
+
+      let lr = dayR * (1 - nightW) + nightSilR * nightW;
+      let lg = dayG * (1 - nightW) + nightSilG * nightW;
+      let lb = dayB * (1 - nightW) + nightSilB * nightW;
+
+      if (layer >= 3) {
+        const gx = theta * 110 + fl * 17;
+        const gy = (mtnTop - elev) * 260;
         const lSeed = hash21(Math.floor(gx), Math.floor(gy));
         const dDot = Math.hypot((gx % 1 + 1) % 1 - 0.5, (gy % 1 + 1) % 1 - 0.5);
-        if (lSeed > 0.95 && dDot < 0.16 && (mtnTop - elev) > 0.02 && (mtnTop - elev) < 0.08) {
-          const wDot = (1 - dDot / 0.16) * (0.25 + 0.75 * Math.max(nightW, goldenW + blueHourW));
-          lr += 0.36 * wDot; lg += 0.14 * wDot; lb += 0.04 * wDot;
+        if (lSeed > 0.955 && dDot < 0.15 && (mtnTop - elev) > 0.02 && (mtnTop - elev) < 0.08) {
+          const wDot = (1 - dDot / 0.15) * (0.22 + 0.78 * Math.max(nightW, goldenW + blueHourW));
+          lr += 0.34 * wDot; lg += 0.13 * wDot; lb += 0.04 * wDot;
         }
       }
       sr = lr; sg = lg; sb = lb;

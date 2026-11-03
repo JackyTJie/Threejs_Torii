@@ -231,33 +231,53 @@ function addWeatheredSpallsAndMoss(root, M, k, zFront, top, rand, pineconeGeo) {
     }
   }
 
-  // 3) 石阶向溪侧（左侧 x0）与阶根背阴缝隙的微颗粒腐殖土青苔垫（薄贴石缝，绝不在踏面中央突兀凸起）
-  const mossCount = rand() < 0.50 ? 1 : 2;
-  for (let m = 0; m < mossCount; m++) {
-    const mx = m === 0
-      ? lerp(x0 + 0.08, x0 + 0.52, rand())
-      : lerp(x0 + 0.12, x1 - 0.35, Math.pow(rand(), 2.2));
-    const mz = zFront - PATH.tread + 0.045 + rand() * 0.055;
-    const mr = lerp(0.075, 0.135, rand());
-    const mGeo = triplanarUv(
-      rockGeometry(mr, 7300 + k * 41 + m * 13, {
-        widthSegments: 10,
+  // 3) 石阶靠溪侧（左侧 x0 边缘）与靠右路边（右侧 x1 边缘）的连片状青苔毯（避开台阶正中间踩踏区，告别孤立小圆点）
+  const leftSheetX = lerp(x0 + 0.14, x0 + 0.56, rand());
+  const leftSheetZ = zFront - PATH.tread * lerp(0.28, 0.82, rand());
+  const leftSheetR = lerp(0.14, 0.22, rand());
+  const leftMossGeo = triplanarUv(
+    rockGeometry(leftSheetR, 7300 + k * 41, {
+      widthSegments: 12,
+      heightSegments: 7,
+      wobble: 0.36,
+      flatten: 0.10
+    }),
+    0.26,
+    [leftSheetX, top, leftSheetZ]
+  );
+  const leftMossSheet = mesh(leftMossGeo, k % 2 === 0 ? M.mossWet : M.mossPatch, `stepMoss-${k}-0`);
+  leftMossSheet.position.set(leftSheetX, top - 0.006, leftSheetZ);
+  leftMossSheet.rotation.y = rand() * 0.45 - 0.22;
+  leftMossSheet.scale.set(1.85 + rand() * 0.45, 0.09, 1.35 + rand() * 0.35);
+  leftMossSheet.castShadow = false;
+  leftMossSheet.receiveShadow = true;
+  leftMossSheet.userData.noCast = true;
+  leftMossSheet.userData.noOutline = true;
+  root.add(leftMossSheet);
+
+  if (rand() < 0.72) {
+    const rightSheetX = lerp(x1 - 0.52, x1 - 0.14, rand());
+    const rightSheetZ = zFront - PATH.tread * lerp(0.32, 0.84, rand());
+    const rightSheetR = lerp(0.12, 0.18, rand());
+    const rightMossGeo = triplanarUv(
+      rockGeometry(rightSheetR, 7300 + k * 41 + 13, {
+        widthSegments: 12,
         heightSegments: 7,
-        wobble: 0.32,
-        flatten: 0.16
+        wobble: 0.34,
+        flatten: 0.10
       }),
-      0.24,
-      [mx, top, mz]
+      0.26,
+      [rightSheetX, top, rightSheetZ]
     );
-    const mossPad = mesh(mGeo, m % 2 === 0 ? M.mossWet : M.mossPatch, `stepMoss-${k}-${m}`);
-    mossPad.position.set(mx, top - 0.008, mz);
-    mossPad.rotation.y = rand() * Math.PI * 2;
-    mossPad.scale.set(1.38, 0.15, 0.82);
-    mossPad.castShadow = false;
-    mossPad.receiveShadow = true;
-    mossPad.userData.noCast = true;
-    mossPad.userData.noOutline = true;
-    root.add(mossPad);
+    const rightMossSheet = mesh(rightMossGeo, M.mossPatch, `stepMoss-${k}-1`);
+    rightMossSheet.position.set(rightSheetX, top - 0.006, rightSheetZ);
+    rightMossSheet.rotation.y = rand() * 0.45 - 0.22;
+    rightMossSheet.scale.set(1.65 + rand() * 0.35, 0.09, 1.25 + rand() * 0.30);
+    rightMossSheet.castShadow = false;
+    rightMossSheet.receiveShadow = true;
+    rightMossSheet.userData.noCast = true;
+    rightMossSheet.userData.noOutline = true;
+    root.add(rightMossSheet);
   }
 }
 

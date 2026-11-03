@@ -32,17 +32,21 @@ const MIST_LAYERS = [
   { name: 'mist-valley-far-3', x: -7.1, z: -6.5, yLift: 1.65, w: 8.0, h: 2.5, ry: 0.1, opacity: 0.13 }
 ];
 
+export const MIST_MATERIALS = [];
+
 function makeMistLayerMaterial(index, baseOpacity) {
   const mat = new THREE.MeshBasicMaterial({
     color: PALETTE.skyMid,
     map: mistVeilTexture({ size: 512, seed: 131 + index * 19 }),
     transparent: true,
-    opacity: baseOpacity,
-    blending: THREE.AdditiveBlending,
+    opacity: baseOpacity * 0.65,
+    blending: THREE.NormalBlending,
     depthWrite: false,
     side: THREE.DoubleSide
   });
   mat.name = `mistBand_${index + 1}`;
+  mat.userData.baseMistOpacity = baseOpacity * 0.65;
+  MIST_MATERIALS.push(mat);
   return mat;
 }
 

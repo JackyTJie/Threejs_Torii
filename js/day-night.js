@@ -1,12 +1,10 @@
 // 全天时动态昼夜与瑞利大气光影联动系统：
-// 实现「深夜(银河星穹) → 蓝调时刻(深蓝/紫粉橘) → 日出/清晨 → 雨后基准 → 正午 → 黄昏(金橘玫红光影隧道) → 暮色蓝调 → 月夜」完整 24 小时循环。
-// 同步联动：程序化瑞利散射天空、太阳/月亮沿天球轨迹运动（角度/色温/强度/阴影软硬度）、
-// 上下半球天光与地面反射环境光、参道木灯笼傍晚自动点亮与清晨自动熄灭（含地面 3×3 格子光斑与雾中球形光晕）、
-// 3D 体积雾时段浓度以及林间丁达尔体积光束（God Ray）。
+// 实现「深夜(纯黑深蓝星穹+黑山剪影) → 蓝调时刻(深蓝/紫粉橘) → 日出/清晨 → 雨后基准 → 正午 → 黄昏(金橘玫红光影隧道) → 暮色蓝调 → 月夜」完整 24 小时循环。
 import * as THREE from 'three';
 import { LIGHT, POST } from './config.js';
 import { lightDirection, shadowFrustum } from './lighting.js';
 import { SUN_LINKED_MATERIALS } from './toon.js';
+import { MIST_MATERIALS } from './assets/mist.js';
 
 const SHADOW_TARGET_Y = 0.4;
 
@@ -18,21 +16,21 @@ export const DAY_NIGHT_KEYFRAMES = [
     isNight: true,
     sunAzimuthDeg: 205,
     sunElevationDeg: 48,
-    sunColor: 0x729cd4,
-    sunIntensity: 0.55,
-    shadowRadius: 5.2,
-    hemiSky: 0x1c314a,
-    hemiGround: 0x0c141d,
-    hemiIntensity: 0.46,
-    rimColor: 0x5682b4,
-    rimIntensity: 0.34,
-    ambientColor: 0x142233,
-    ambientIntensity: 0.14,
-    fogColorLow: 0x0c1824,
-    fogColorHigh: 0x1a2e42,
-    fogDensity: 0.30,
-    bloomStrength: 0.26,
-    lanternBrightness: 1.45,
+    sunColor: 0x48689a,
+    sunIntensity: 0.22,
+    shadowRadius: 5.4,
+    hemiSky: 0x060c18,
+    hemiGround: 0x020408,
+    hemiIntensity: 0.22,
+    rimColor: 0x243b5c,
+    rimIntensity: 0.16,
+    ambientColor: 0x040812,
+    ambientIntensity: 0.06,
+    fogColorLow: 0x02050c,
+    fogColorHigh: 0x050b18,
+    fogDensity: 0.26,
+    bloomStrength: 0.24,
+    lanternBrightness: 1.48,
     moonPhase: 0.85
   },
   {
@@ -162,21 +160,21 @@ export const DAY_NIGHT_KEYFRAMES = [
     isNight: true,
     sunAzimuthDeg: 218,
     sunElevationDeg: 42,
-    sunColor: 0x94bce8,
-    sunIntensity: 0.68,
+    sunColor: 0x6288b8,
+    sunIntensity: 0.32,
     shadowRadius: 4.8,
-    hemiSky: 0x28405c,
-    hemiGround: 0x101c28,
-    hemiIntensity: 0.52,
-    rimColor: 0x6ea0d4,
-    rimIntensity: 0.38,
-    ambientColor: 0x1a2c40,
-    ambientIntensity: 0.16,
-    fogColorLow: 0x10202e,
-    fogColorHigh: 0x243c52,
-    fogDensity: 0.28,
-    bloomStrength: 0.26,
-    lanternBrightness: 1.42,
+    hemiSky: 0x0a1426,
+    hemiGround: 0x04070e,
+    hemiIntensity: 0.28,
+    rimColor: 0x32527a,
+    rimIntensity: 0.20,
+    ambientColor: 0x060c18,
+    ambientIntensity: 0.08,
+    fogColorLow: 0x030812,
+    fogColorHigh: 0x071020,
+    fogDensity: 0.26,
+    bloomStrength: 0.24,
+    lanternBrightness: 1.44,
     moonPhase: 1.0
   },
   {
@@ -186,21 +184,21 @@ export const DAY_NIGHT_KEYFRAMES = [
     isNight: true,
     sunAzimuthDeg: 205,
     sunElevationDeg: 48,
-    sunColor: 0x729cd4,
-    sunIntensity: 0.55,
-    shadowRadius: 5.2,
-    hemiSky: 0x1c314a,
-    hemiGround: 0x0c141d,
-    hemiIntensity: 0.46,
-    rimColor: 0x5682b4,
-    rimIntensity: 0.34,
-    ambientColor: 0x142233,
-    ambientIntensity: 0.14,
-    fogColorLow: 0x0c1824,
-    fogColorHigh: 0x1a2e42,
-    fogDensity: 0.30,
-    bloomStrength: 0.26,
-    lanternBrightness: 1.45,
+    sunColor: 0x48689a,
+    sunIntensity: 0.22,
+    shadowRadius: 5.4,
+    hemiSky: 0x060c18,
+    hemiGround: 0x020408,
+    hemiIntensity: 0.22,
+    rimColor: 0x243b5c,
+    rimIntensity: 0.16,
+    ambientColor: 0x040812,
+    ambientIntensity: 0.06,
+    fogColorLow: 0x02050c,
+    fogColorHigh: 0x050b18,
+    fogDensity: 0.26,
+    bloomStrength: 0.24,
+    lanternBrightness: 1.48,
     moonPhase: 0.85
   }
 ];
@@ -316,6 +314,11 @@ export function createDayNightSystem({ scene, lighting, post }) {
     if (scene && scene.fog) {
       scene.fog.color.setHex(state.fogColorHigh);
     }
+    for (const mMat of MIST_MATERIALS) {
+      mMat.color.setHex(state.fogColorHigh);
+      const baseOp = mMat.userData.baseMistOpacity ?? 0.09;
+      mMat.opacity = state.isNight ? baseOp * 0.18 : baseOp;
+    }
     if (post) {
       post.setFogColors(state.fogColorLow, state.fogColorHigh);
       post.setHeightFogDensity(userFogOverride !== null ? userFogOverride : state.fogDensity);
@@ -339,6 +342,9 @@ export function createDayNightSystem({ scene, lighting, post }) {
       if (u.uMossSunDir && u.uMossSunDir.value) u.uMossSunDir.value.copy(dir);
       if (u.uSpecSunDir && u.uSpecSunDir.value) u.uSpecSunDir.value.copy(dir);
       if (u.uWaterSunDir && u.uWaterSunDir.value) u.uWaterSunDir.value.copy(dir);
+      if (u.uWaterDayFactor) {
+        u.uWaterDayFactor.value = state.isNight ? 0.18 : Math.min(1.0, Math.max(0.24, state.sunIntensity / 1.35));
+      }
       if (u.uCausticLightDir && u.uCausticLightDir.value) u.uCausticLightDir.value.copy(dir);
       if (u.uTranslucencySunTint && u.uTranslucencySunTint.value) {
         u.uTranslucencySunTint.value.setHex(state.sunColor);

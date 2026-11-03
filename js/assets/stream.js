@@ -1,11 +1,10 @@
-// 山涧蜿蜒叠瀑溪流（二维浅水方程 SWE + 三维 Gerstner 高密度起伏网格 + 斯涅尔折射透底 + 实时光追倒影 + 树影遮挡/阳光波光 + 随波起伏漂浮落叶）：
-// 1) 高密度三维动态起伏水面网格（WATER_COLS = 33, SAMPLE_PITCH = 0.065）：
-//    开启 receiveShadow = true 接收林冠树影，结合顶点着色器 SWE + Gerstner 三维位移与 CPU 逐帧复合波场；
-// 2) 溪面漂浮落叶系统（42 片独立建模的卷曲秋叶 streamWater-floatingLeaf-*）：
-//    含 24 片顺流漂动避石落叶（drift）与 18 片依附在溪石窝旁的回旋浮叶（eddy），逐帧采样三维波高与波面法线倾角随水起伏摇曳；
-// 3) 溪床多材质层次（streamBed）：
-//    金褐砂砾河床（soilStreamBed）+ 54 块交错叠石堰 + 200 颗多色阶棱角河石/浅色卵石 + 12 处冲刷砂洲 + 48 片水底沉叶；
-//    所有水下卵石与浸没堰唇石板一律标记 noOutline = true，彻底消除水中石头只剩黑边轮廓的视觉伪影。
+// 山涧蜿蜒叠瀑溪流（二维浅水方程 SWE + 三维粒子化瀑布水帘/飞溅水珠/翻滚气泡白沫系统 + 斯涅尔折射透底 + 实时光追倒影 + 随波起伏漂浮落叶）：
+// 1) 三维粒子化水流系统（buildStreamParticleSystems，共 2,160 颗动态流体粒子 InstancedMesh）：
+//    - 瀑布抛物线水帘丝缕与水珠粒子（streamWater-jetParticles，720 颗）：沿 6 级叠瀑石堰豁口呈抛物线飞流直下，复现参考图 1 的分股水帘与飞珠；
+//    - 落水潭翻涌白沫气泡团与飞溅水滴（streamWater-splashParticles，900 颗）：在每级瀑布落水潭与溪石迎水面翻滚扩散、弹跳飞溅，复现参考图 1/3/4/5 的粒子化白水；
+//    - 乱石急流流线水珠链（streamWater-rapidParticles，540 颗）：顺着蜿蜒急流槽与八字绕石流线高速穿行；
+// 2) 高密度三维动态起伏水面网格（WATER_COLS = 33, SAMPLE_PITCH = 0.065）与 42 片随波起伏漂浮落叶；
+// 3) 溪床多材质层次（streamBed）：金褐砂砾河床 + 54 块交错叠石堰 + 320 颗多色阶棱角河石/卵石 + 12 处冲刷砂洲 + 48 片水底沉叶。
 import * as THREE from 'three';
 import { group, leafSheetGeometry, mesh, place, rng, rockGeometry, slabGeometry, triplanarUv } from '../primitives.js';
 import {
@@ -48,6 +47,10 @@ const BAR_COUNT = 12;
 const SUNKEN_LEAF_COUNT = 48;
 const FLOATING_DRIFT_LEAVES = 24;
 const FLOATING_EDDY_LEAVES = 18;
+
+const JET_PARTICLE_COUNT = 720;
+const SPLASH_PARTICLE_COUNT = 900;
+const RAPID_PARTICLE_COUNT = 540;
 
 /* ------------------------------------------------------------------ 三维样条曲线与障碍物场 */
 
@@ -271,7 +274,7 @@ function buildFeatheredCascadeSheets(root, M) {
         const vn = c / cols;
         const v = vn - 0.5;
         const edgeTaper = Math.sin(vn * Math.PI);
-        const ribs = (0.5 + 0.5 * Math.sin(vn * Math.PI * 5 + cIdx * 1.3)) * 0.016 * edgeTaper;
+        const ribs = (0.5 + 0.5 * Math.sin(vn * Math.PI * 7 + cIdx * 1.3)) * 0.018 * edgeTaper;
         const x = cx + v * w;
         const dz = Math.sin(vn * Math.PI * 3 + u * 2.2) * 0.028 * edgeTaper;
         pos.push(x, yBase + ribs, z + dz);
@@ -309,6 +312,178 @@ function buildFeatheredCascadeSheets(root, M) {
   return count;
 }
 
+/* ------------------------------------------------------------------ 三维粒子化水流、瀑布飞珠与落水潭白沫系统（复现参考图 1/3/4/5） */
+
+function buildStreamParticleSystems(root, M) {
+  const rand = rng(9413);
+  const sprayMat = M.waterSprayParticle || M.waterfallFoam || M.waterSurface;
+  const foamMat = M.waterFoamCluster || M.waterfallFoam || M.waterSurface;
+  const dummy = new THREE.Object3D();
+
+  // 1) 瀑布分股抛物线水帘丝缕与飞落水珠粒子（720 颗，分布在 6 级叠瀑石堰的多股水舌上，复现参考图 1）
+  const jetGeo = new THREE.SphereGeometry(0.016, 6, 5);
+  const jetInst = new THREE.InstancedMesh(jetGeo, sprayMat, JET_PARTICLE_COUNT);
+  jetInst.name = 'streamWater-jetParticles';
+  jetInst.castShadow = false;
+  jetInst.receiveShadow = true;
+  jetInst.renderOrder = 12;
+  jetInst.userData.noCast = true;
+  jetInst.userData.noOutline = true;
+
+  const jetSpecs = [];
+  const jetsPerCas = Math.floor(JET_PARTICLE_COUNT / STREAM_CASCADES.length);
+  for (let i = 0; i < JET_PARTICLE_COUNT; i++) {
+    const cIdx = Math.min(STREAM_CASCADES.length - 1, Math.floor(i / jetsPerCas));
+    const cas = STREAM_CASCADES[cIdx];
+    const zTop = cas.z - cas.halfSpan * 0.65;
+    const zBot = cas.z + cas.halfSpan * 0.72;
+    const yTop = waterY(zTop) + 0.012;
+    const yBot = waterY(zBot) + 0.008;
+    const cxTop = streamCenterX(zTop);
+    const cxBot = streamCenterX(zBot);
+    const halfW = streamBankHalf(cas.z) * 0.62;
+
+    // 分为 11 股穿过岩石缝隙的独立水帘束（模拟图 1 中分股垂落的水柱丝缕）
+    const strandIdx = i % 11;
+    const strandU = (strandIdx / 10) * 2 - 1;
+    const lateralOffset = strandU * halfW * 0.88 + (rand() - 0.5) * 0.055;
+    const spreadOut = strandU * 0.045 + (rand() - 0.5) * 0.035;
+    const phase = rand();
+    const speed = 1.65 + rand() * 0.95;
+    const radiusScale = 0.68 + rand() * 0.68;
+    const isStreak = rand() < 0.62;
+
+    jetSpecs.push({
+      cIdx, zTop, zBot, yTop, yBot, cxTop, cxBot,
+      lateralOffset, spreadOut, phase, speed, radiusScale, isStreak
+    });
+
+    const u = phase;
+    const x = lerp(cxTop, cxBot, u) + lateralOffset + spreadOut * u;
+    const z = lerp(zTop, zBot, u);
+    const y = lerp(yTop, yBot, u * u) + Math.sin(u * Math.PI) * 0.028;
+    dummy.position.set(x, y, z);
+    dummy.rotation.set(0.55 + u * 0.65, 0, (rand() - 0.5) * 0.25);
+    const sy = isStreak ? radiusScale * (2.2 + 2.4 * u) : radiusScale * 1.15;
+    dummy.scale.set(radiusScale * 0.78, sy, radiusScale * 0.85);
+    dummy.updateMatrix();
+    jetInst.setMatrixAt(i, dummy.matrix);
+  }
+  jetInst.instanceMatrix.needsUpdate = true;
+  jetInst.userData.streamParticles = { kind: 'jets', specs: jetSpecs };
+  root.add(jetInst);
+
+  // 2) 落水潭翻滚白沫气泡团与飞溅水滴粒子（900 颗：分布在 6 级瀑布落水潭 + 8 处溪心乱石激流区，复现参考图 1/3/4/5）
+  const splashGeo = new THREE.IcosahedronGeometry(0.022, 1);
+  const splashInst = new THREE.InstancedMesh(splashGeo, foamMat, SPLASH_PARTICLE_COUNT);
+  splashInst.name = 'streamWater-splashParticles';
+  splashInst.castShadow = false;
+  splashInst.receiveShadow = true;
+  splashInst.renderOrder = 12;
+  splashInst.userData.noCast = true;
+  splashInst.userData.noOutline = true;
+
+  const splashSpecs = [];
+  for (let i = 0; i < SPLASH_PARTICLE_COUNT; i++) {
+    const isCascadePlunge = i < 620;
+    let anchorX, anchorZ, anchorY, spanX, spanZ;
+    if (isCascadePlunge) {
+      const cas = STREAM_CASCADES[i % STREAM_CASCADES.length];
+      const zPlunge = cas.z + cas.halfSpan * 0.55;
+      anchorX = streamCenterX(zPlunge);
+      anchorZ = zPlunge;
+      anchorY = waterY(zPlunge);
+      spanX = streamBankHalf(cas.z) * 0.64;
+      spanZ = 0.42;
+    } else {
+      const st = STREAM_STONES[i % STREAM_STONES.length];
+      anchorX = st.x;
+      anchorZ = st.z - st.r * 0.25;
+      anchorY = waterY(st.z);
+      spanX = st.r * 1.35;
+      spanZ = st.r * 1.45;
+    }
+
+    const isAirborneDrop = rand() < 0.42;
+    const lat = (rand() - 0.5) * 2 * spanX;
+    const driftZ = rand() * spanZ;
+    const phase = rand();
+    const speed = isAirborneDrop ? (2.1 + rand() * 1.2) : (0.95 + rand() * 0.75);
+    const leapH = isAirborneDrop ? (0.045 + rand() * 0.11) : (0.008 + rand() * 0.016);
+    const size = isAirborneDrop ? (0.42 + rand() * 0.45) : (0.75 + rand() * 1.15);
+
+    splashSpecs.push({
+      anchorX, anchorY, anchorZ, lat, spanX, spanZ, driftZ,
+      phase, speed, leapH, size, isAirborneDrop
+    });
+
+    const u = phase;
+    const x = anchorX + lat * (0.75 + 0.35 * u);
+    const z = anchorZ + (u - 0.25) * spanZ;
+    const wy = waterY(z);
+    const y = wy + 4 * u * (1 - u) * leapH + 0.006;
+    dummy.position.set(x, y, z);
+    dummy.rotation.set(rand() * 3.14, rand() * 3.14, rand() * 3.14);
+    const env = Math.sin(u * Math.PI);
+    if (isAirborneDrop) {
+      dummy.scale.setScalar(size * (0.45 + 0.65 * env));
+    } else {
+      const sHoriz = size * (0.65 + 0.85 * Math.sin(u * Math.PI * 0.85));
+      dummy.scale.set(sHoriz, size * 0.32 * env, sHoriz * 1.15);
+    }
+    dummy.updateMatrix();
+    splashInst.setMatrixAt(i, dummy.matrix);
+  }
+  splashInst.instanceMatrix.needsUpdate = true;
+  splashInst.userData.streamParticles = { kind: 'splashes', specs: splashSpecs };
+  root.add(splashInst);
+
+  // 3) 乱石急流槽流线水珠链粒子（540 颗：沿着蜿蜒溪道急流线与岩石分流槽高速穿行，增强流体粒子动态感）
+  const rapidGeo = new THREE.SphereGeometry(0.015, 5, 4);
+  const rapidInst = new THREE.InstancedMesh(rapidGeo, sprayMat, RAPID_PARTICLE_COUNT);
+  rapidInst.name = 'streamWater-rapidParticles';
+  rapidInst.castShadow = false;
+  rapidInst.receiveShadow = true;
+  rapidInst.renderOrder = 11;
+  rapidInst.userData.noCast = true;
+  rapidInst.userData.noOutline = true;
+
+  const curve = getStreamSplineCurve();
+  const obstacles = getStreamObstacles();
+  const rapidSpecs = [];
+  for (let i = 0; i < RAPID_PARTICLE_COUNT; i++) {
+    const u = rand();
+    const pt = curve.getPointAt(u);
+    const half = streamBankHalf(pt.z) * 0.62;
+    const latRatio = (rand() - 0.5) * 1.85;
+    const lat = latRatio * half;
+    const speed = 0.065 + rand() * 0.055;
+    const size = 0.55 + rand() * 0.65;
+    const phase = rand() * Math.PI * 2;
+    rapidSpecs.push({ u, latRatio, speed, size, phase });
+
+    let x = pt.x + lat;
+    const z = pt.z;
+    for (const ob of obstacles) {
+      const d = Math.hypot(x - ob.x, z - ob.z);
+      if (d < ob.r + 0.06) {
+        x = ob.x + (x >= ob.x ? 1 : -1) * (ob.r + 0.08);
+      }
+    }
+    const y = waterY(z) + 0.008;
+    dummy.position.set(x, y, z);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(size * 0.72, size * 0.42, size * 2.1);
+    dummy.updateMatrix();
+    rapidInst.setMatrixAt(i, dummy.matrix);
+  }
+  rapidInst.instanceMatrix.needsUpdate = true;
+  rapidInst.userData.streamParticles = { kind: 'rapids', specs: rapidSpecs };
+  root.add(rapidInst);
+
+  return 3;
+}
+
 /* ------------------------------------------------------------------ 溪面随波起伏与漂流落叶系统 */
 
 function buildFloatingStreamLeaves(root, M) {
@@ -330,7 +505,6 @@ function buildFloatingStreamLeaves(root, M) {
 
   let count = 0;
 
-  // 1. 24 片顺流漂动、遇石绕行、随三维水波高低起伏与倾侧摇曳的浮叶
   for (let i = 0; i < FLOATING_DRIFT_LEAVES; i++) {
     const u = (i + rand() * 0.85) / FLOATING_DRIFT_LEAVES;
     const pt = curve.getPointAt(u);
@@ -374,7 +548,6 @@ function buildFloatingStreamLeaves(root, M) {
     count += 1;
   }
 
-  // 2. 18 片聚集在溪石边缘与水湾处的回旋浮叶（对照参考图中紧贴石头旁随波起伏的黄叶）
   for (let i = 0; i < FLOATING_EDDY_LEAVES; i++) {
     const st = STREAM_STONES[i % STREAM_STONES.length];
     const ang = rand() * Math.PI * 2;
@@ -436,7 +609,7 @@ function mouthGeometry(st) {
 }
 
 /**
- * 山涧水面（高密度三维起伏网格 + 真实树影接收 + 斯涅尔折射透底 + 鸟居/树冠光追倒影 + 42 片随水起伏浮叶）。
+ * 山涧水面（高密度三维起伏网格 + 2,160 颗动态瀑布飞沫水珠粒子系统 + 斯涅尔折射透底 + 鸟居/树冠光追倒影 + 42 片随水起伏浮叶）。
  */
 export function createStreamWater(M) {
   const root = group('streamWater');
@@ -486,6 +659,7 @@ export function createStreamWater(M) {
   });
 
   meshCount += buildFeatheredCascadeSheets(root, M);
+  meshCount += buildStreamParticleSystems(root, M);
   meshCount += buildFloatingStreamLeaves(root, M);
 
   root.userData.samples = samples;
@@ -570,13 +744,11 @@ export function createStreamBed(M) {
   const mossyMat = M.stoneRockMossy || M.stoneRockWet;
   const chipMat = M.stoneChip || M.stonePebble;
 
-  // 1. 6 级小瀑布多层次天然咬合叠石堰（每级 9 块独立岩石 Mesh = 两侧护堰劈理石 + 扁平堰唇石板 + 咬合楔石，共 54 块）
   STREAM_CASCADES.forEach((cas, cIdx) => {
     const cx = streamCenterX(cas.z);
     const half = streamBankHalf(cas.z);
     const wy = waterY(cas.z);
 
-    // 1a. 6 块主次错落的劈理堰石（两侧露出岸线护坡并部分覆苔，中段半浸托起水帘）
     const weirSlots = [
       { dx: -half * 0.82, dz: -0.10, r: 0.35, flat: 0.58, mat: cIdx % 2 === 0 ? mossyMat : M.stoneRockWet },
       { dx: -half * 0.54, dz: 0.08, r: 0.27, flat: 0.52, mat: stratMat },
@@ -618,7 +790,6 @@ export function createStreamBed(M) {
       meshCount += 1;
     });
 
-    // 1b. 3 块扁平锐棱跌水堰唇石板（浸没于水舌下方，noOutline = true 以免水中出现黑边圈）
     const lipOffsets = [-half * 0.36, 0.0, half * 0.36];
     lipOffsets.forEach((dx, lIdx) => {
       const lx = cx + dx + (rand() - 0.5) * 0.04;
@@ -640,7 +811,6 @@ export function createStreamBed(M) {
     });
   });
 
-  // 2. 水下泥沙冲刷砾石条
   const barsPerRun = runs.map((run) => Math.max(1, Math.round((BAR_COUNT * run.length) / all.length)));
   let barIndex = 0;
   runs.forEach((run, runIndex) => {
@@ -667,7 +837,6 @@ export function createStreamBed(M) {
     }
   });
 
-  // 3. 200 颗多面体棱角溪底河石与浅色卵石（水下石头一律 noOutline = true，通过清澈折射展现真实立体块面）
   const pebblesPerRun = runs.map((run) => Math.max(1, Math.round((PEBBLE_COUNT * run.length) / all.length)));
   let pebbleIndex = 0;
   runs.forEach((run, runIndex) => {
@@ -709,7 +878,6 @@ export function createStreamBed(M) {
     }
   });
 
-  // 4. 溪底泥沙上的沉水红褐落叶
   const leafGeo = leafSheetGeometry({ kind: 'maple', size: 0.085, thickness: 0.003, curl: 0.18, steps: 14 });
   leafGeo.rotateX(-Math.PI / 2);
   const leafMats = [M.leafSheetGroundRust, M.leafSheetGroundLight, M.leafSheetGround];

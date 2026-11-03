@@ -248,11 +248,20 @@ export function collectWaterSurfaces(roots) {
   const eddies = [];
   const cascades = [];
   const floatingLeaves = [];
+  const particleSystems = [];
 
   for (const root of roots) {
     if (!root) continue;
     root.traverse((node) => {
       if (!node.isMesh) return;
+      if (node.userData.streamParticles && node.isInstancedMesh) {
+        particleSystems.push({
+          inst: node,
+          kind: node.userData.streamParticles.kind,
+          specs: node.userData.streamParticles.specs
+        });
+        return;
+      }
       if (node.userData.waterSurface) {
         const position = node.geometry.getAttribute('position');
         if (!position) return;
@@ -290,7 +299,89 @@ export function collectWaterSurfaces(roots) {
       }
     });
   }
-  return { surfaces, culvertSlabs, eddies, cascades, floatingLeaves };
+  return { surfaces, culvertSlabs, eddies, cascades, floatingLeaves, particleSystems };
+}
+
+const particleDummy = new THREE.Object3D();
+const particlePt = new THREE.Vector3();
+
+/**
+ * 逐帧推进 2,160 颗三维水粒子系统：
+ * 1) jets：6 级小瀑布分股抛物线飞落水柱丝缕与水滴；
+ * 2) splashes：落水潭翻滚白沫气泡团与飞溅弹跳水珠；
+ * 3) rapids：乱石急流槽高速流线水珠链。
+ */
+function stepStreamParticles(particleSystems, time, strength) {
+  if (!particleSystems || !particleSystems.length) return;
+  const curve = getStreamSplineCurve();
+  const obstacles = getStreamObstacles();
+
+  for (const sys of particleSystems) {
+    const { inst, kind, specs } = sys;
+    if (kind === 'jets') {
+      for (let i = 0; i < specs.length; i++) {
+        const sp = specs[i];
+        const u = (sp.phase + time * sp.speed * strength) % 1.0;
+        const x = sp.cxTop + (sp.cxBot - sp.cxTop) * u + sp.lateralOffset + sp.spreadOut * u;
+        const z = sp.zTop + (sp.zBot - sp.zTop) * u;
+        const y = sp.yTop + (sp.yBot - sp.yTop) * (u * u) + Math.sin(u * Math.PI) * 0.028;
+        particleDummy.position.set(x, y, z);
+        particleDummy.rotation.set(0.52 + u * 0.68, 0, Math.sin(time * 4.0 + i) * 0.14);
+        const env = Math.sin(u * Math.PI);
+        const sy = sp.isStreak ? sp.radiusScale * (2.0 + 2.6 * u) : sp.radiusScale * (0.9 + 0.5 * env);
+        particleDummy.scale.set(sp.radiusScale * (0.65 + 0.25 * env), sy, sp.radiusScale * 0.82);
+        particleDummy.updateMatrix();
+        inst.setMatrixAt(i, particleDummy.matrix);
+      }
+    } else if (kind === 'splashes') {
+      for (let i = 0; i < specs.length; i++) {
+        const sp = specs[i];
+        const u = (sp.phase + time * sp.speed * strength) % 1.0;
+        const env = Math.sin(u * Math.PI);
+        const x = sp.anchorX + sp.lat * (0.72 + 0.42 * u) + Math.sin(time * 3.5 + i) * 0.018;
+        const z = sp.anchorZ + (u - 0.22) * sp.spanZ;
+        const wy = waterY(z);
+        const y = wy + 4 * u * (1 - u) * sp.leapH + 0.005;
+        particleDummy.position.set(x, y, z);
+        particleDummy.rotation.set(u * 2.5 + i, time * 1.8 + i, u * 1.7);
+        if (sp.isAirborneDrop) {
+          particleDummy.scale.setScalar(sp.size * (0.38 + 0.72 * env));
+        } else {
+          const sHoriz = sp.size * (0.62 + 0.92 * Math.sin(u * Math.PI * 0.85));
+          particleDummy.scale.set(sHoriz, sp.size * 0.30 * env, sHoriz * 1.18);
+        }
+        particleDummy.updateMatrix();
+        inst.setMatrixAt(i, particleDummy.matrix);
+      }
+    } else if (kind === 'rapids') {
+      for (let i = 0; i < specs.length; i++) {
+        const sp = specs[i];
+        const u = (sp.u + time * sp.speed * strength) % 1.0;
+        curve.getPointAt(u, particlePt);
+        const half = streamBankHalf(particlePt.z) * 0.62;
+        let x = particlePt.x + sp.latRatio * half + Math.sin(time * 4.2 + sp.phase) * 0.03;
+        const z = particlePt.z;
+        for (let j = 0; j < obstacles.length; j++) {
+          const ob = obstacles[j];
+          const dz = z - ob.z;
+          if (dz < -ob.r * 1.8 || dz > ob.r * 1.8) continue;
+          const dx = x - ob.x;
+          const d = Math.hypot(dx, dz);
+          if (d < ob.r + 0.065) {
+            x = ob.x + (dx >= 0 ? 1 : -1) * (ob.r + 0.075);
+          }
+        }
+        const y = waterY(z) + 0.007 + Math.sin(time * 9.0 + sp.phase) * 0.004;
+        particleDummy.position.set(x, y, z);
+        particleDummy.rotation.set(0, Math.sin(z * 0.6) * 0.25, 0);
+        const pulse = 0.75 + 0.35 * Math.sin(time * 7.5 + sp.phase);
+        particleDummy.scale.set(sp.size * 0.68 * pulse, sp.size * 0.38, sp.size * 2.2 * pulse);
+        particleDummy.updateMatrix();
+        inst.setMatrixAt(i, particleDummy.matrix);
+      }
+    }
+    inst.instanceMatrix.needsUpdate = true;
+  }
 }
 
 /**
@@ -378,7 +469,7 @@ function stepFloatingLeaves(floatingLeaves, dt, time, strength, params) {
 export function createStreamFlow(roots, options = {}) {
   const params = ANIM.stream;
   const strength = THREE.MathUtils.clamp(options.strength ?? 1, 0, 1);
-  const { surfaces, culvertSlabs, eddies, cascades, floatingLeaves } = collectWaterSurfaces(roots);
+  const { surfaces, culvertSlabs, eddies, cascades, floatingLeaves, particleSystems } = collectWaterSurfaces(roots);
   let lastTime = 0;
 
   function update({ time }) {
@@ -393,6 +484,7 @@ export function createStreamFlow(roots, options = {}) {
     }
 
     stepFloatingLeaves(floatingLeaves, dt, time, strength, params);
+    stepStreamParticles(particleSystems, time, strength);
 
     for (const surface of surfaces) {
       const array = surface.attribute.array;

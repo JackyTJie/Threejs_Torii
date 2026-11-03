@@ -20,10 +20,10 @@ export const LEVEL = {
   valleyFloor: 0.3, // 溪谷谷底（z = 11.6 处；随 z 抬升，见 layout.valleyLevel）
   streamBedOffset: -0.16, // 溪床 = 谷底 − 0.16
   waterOffset: -0.05, // 水面 = 谷底 − 0.05（护岸顶净空 0.05）
-  pathShoulder: 0.16, // 右路肩高出参道坡面
-  rightHillTop: 3.4, // 右坡林地顶（陡坡抬升，围合右侧参道）
-  leftRidgeLow: 2.1, // 左脊高出谷底（前缘）
-  leftRidgeHigh: 3.2 // 左脊高出谷底（后缘）
+  pathShoulder: 0.36, // 右路肩抬升衔接陡峭右坡
+  rightHillTop: 4.75, // 右坡林地顶（陡峭浑厚的右侧山坡）
+  leftRidgeLow: 1.35, // 左脊高出谷底（前缘，温和山谷西岸）
+  leftRidgeHigh: 1.95 // 左脊高出谷底（后缘）
 };
 
 /** 调色板（LAYOUT_PLAN §9）—— 六大材质类明确区分，1:1 还原参考图雨后幽深浓绿与鲜明朱红鸟居 */
@@ -246,7 +246,7 @@ export const POST = {
     exposure: 0.96,
     contrast: 1.06,
     saturation: 1.06,
-    lift: 0.025,
+    lift: 0.008,
     gain: 1.0,
     warmth: -0.01,
     lutStrength: 0.82,

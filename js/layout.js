@@ -61,8 +61,8 @@ export function pathCenterX(z) {
     const u = clamp((PATH.zBottom - z) / (PATH.zBottom - (-0.9)), 0, 1);
     return 0.82 * (1 - u) * (1 - u) + 2 * (-0.34) * u * (1 - u) + 0.28 * u * u;
   }
-  const s = clamp(-0.9 - z, 0, 10.5);
-  return 0.28 + 0.0992 * s + 0.058 * s * s + 0.0038 * s * s * s;
+  const s = clamp(-0.9 - z, 0, 8.3);
+  return 0.28 + 0.0992 * s + 0.032 * s * s;
 }
 
 /** 相对基准 centerX (0.3) 的横向偏移量 */
@@ -82,9 +82,14 @@ export function pathYaw(z) {
   return Math.atan2(-dx, 0.5);
 }
 
-/** 参道连续坡面：地形与石阶共用的基准坡面 */
+/** 参道连续坡面：石阶段保持恒定坡度，过石阶顶（z < -4.4）后平缓收顶并向后缘自然微降，消除后景高耸断崖 */
 export function pathRampY(z) {
-  return z <= PATH.zBottom ? PATH.bottomY + (PATH.zBottom - z) * PATH.grade : PATH.bottomY;
+  if (z > PATH.zBottom) return PATH.bottomY;
+  if (z >= PATH.zTop) return PATH.bottomY + (PATH.zBottom - z) * PATH.grade;
+  const extraZ = PATH.zTop - z;
+  const rise = (extraZ * 0.08) / (1 + extraZ * 0.18);
+  const rearRollOff = smoothstep(4.5, 11.6, extraZ) * 0.45;
+  return PATH.topY + rise - rearRollOff;
 }
 
 /** 第 k 级（k = 0 … 31）的前缘 z；踏面覆盖 z → z - 0.50 */
@@ -339,10 +344,19 @@ function bandRanges(z) {
   const slopeX0 = c - VALLEY_LEFT - LEFT_SLOPE_SPAN;
   const valleyX0 = c - VALLEY_LEFT;
   const valleyX1 = Math.min(px0 - 0.25, c + VALLEY_RIGHT);
-  const footSpan = Math.max(0.25, px0 - valleyX1);
-  const rightShoulderX1 = Math.min(CONTENT_HALF - 0.6, px1 + SHOULDER_WIDTH);
-  const shoulderSpan = Math.max(0.25, rightShoulderX1 - px1);
-  const hillSpan = Math.max(0.3, CONTENT_HALF - rightShoulderX1);
+  const footSpan = Math.max(0.45, px0 - valleyX1);
+  const rightShoulderX1 = Math.min(CONTENT_HALF - 3.5, px1 + SHOULDER_WIDTH);
+  const shoulderSpan = Math.max(0.45, rightShoulderX1 - px1);
+  const hillSpan = Math.max(5.5, CONTENT_HALF - rightShoulderX1);
+
+  // 塑造「左侧为深涧山谷、右侧为陡峭抬升山坡」的自然地貌：
+  // 右侧山势整体陡峭高耸，同时在右后方外角（z < -10, x > 9）做圆润收顶，既保证右侧山坡陡峭感又消除边缘尖角
+  const frontMidLift = lerp(1.15, 0.28, smoothstep(11.0, -6.5, z));
+  const rearTaper = lerp(1.0, 0.54, smoothstep(-3.0, -14.5, z));
+  const shoulderRise = (LEVEL.pathShoulder + frontMidLift * 0.28) * lerp(1.0, 0.58, smoothstep(-4.0, -14.0, z));
+  const hillTopRise = (LEVEL.rightHillTop + frontMidLift * 0.95) * rearTaper;
+  const rearFootFloor = lerp(valley, ramp - 0.35, smoothstep(-3.5, -10.0, z));
+
   return [
     { name: 'leftRidge', x0: LEFT_RIDGE_OUTER, x1: slopeX0, levelAt: () => ridge },
     {
@@ -356,20 +370,30 @@ function bandRanges(z) {
       name: 'leftFoot',
       x0: valleyX1,
       x1: px0,
-      levelAt: (x) => lerp(valley, ramp, smoothstep(0, 1, (x - valleyX1) / footSpan))
+      levelAt: (x) => {
+        const u = clamp((x - valleyX1) / footSpan, 0, 1);
+        const vBase = lerp(valley, rearFootFloor, smoothstep(0.0, 0.5, u));
+        return lerp(vBase, ramp, smoothstep(0, 1, u));
+      }
     },
     { name: 'path', x0: px0, x1: px1, levelAt: () => ramp },
     {
       name: 'shoulder',
       x0: px1,
       x1: rightShoulderX1,
-      levelAt: (x) => ramp + LEVEL.pathShoulder * smoothstep(0, 1, (x - px1) / shoulderSpan)
+      levelAt: (x) => ramp + shoulderRise * smoothstep(0, 1, (x - px1) / shoulderSpan)
     },
     {
       name: 'rightHill',
       x0: rightShoulderX1,
       x1: CONTENT_HALF,
-      levelAt: (x) => ramp + lerp(LEVEL.pathShoulder, LEVEL.rightHillTop, smoothstep(0, 1, (x - rightShoulderX1) / hillSpan))
+      levelAt: (x) => {
+        const u = clamp((x - rightShoulderX1) / hillSpan, 0, 1);
+        // 前段陡峭抬升（u^0.78），后外角圆润收坡防止底座边界尖刺
+        const steepSlope = 0.52 * Math.pow(u, 0.78) + 0.48 * smoothstep(0, 1, u);
+        const cornerRound = 1 - 0.36 * smoothstep(-9.5, -15.8, z) * smoothstep(8.5, 15.8, x);
+        return ramp + lerp(shoulderRise, hillTopRise * cornerRound, steepSlope);
+      }
     }
   ];
 }
@@ -491,19 +515,53 @@ export const TREES = [
   { id: 13, x: 5.4, z: 10.8, species: 'kaede', scale: 1.2 },
   { id: 14, x: 3.6, z: 11.8, species: 'sakaki', scale: 1.12 },
   { id: 15, x: 4.4, z: -4.2, species: 'sakaki', scale: 1.22 },
-  { id: 16, x: 6.4, z: 6.2, species: 'kusunoki', scale: 1.25 },
-  { id: 17, x: 7.4, z: -7.5, species: 'kaede', scale: 1.2 },
+  { id: 16, x: 6.4, z: 6.2, species: 'kusunoki', scale: 1.15 },
+  { id: 17, x: 7.4, z: -7.5, species: 'kaede', scale: 1.14 },
   { id: 18, x: 2.9, z: 7.4, species: 'sakaki', scale: 1.08 },
-  { id: 19, x: 6.6, z: -11.2, species: 'sakaki', scale: 1.15 },
-  { id: 20, x: 6.8, z: 1.8, species: 'kusunoki', scale: 1.25 },
-  { id: 21, x: 5.8, z: -2.4, species: 'kaede', scale: 1.2 },
+  { id: 19, x: 6.6, z: -11.2, species: 'sakaki', scale: 1.12 },
+  { id: 20, x: 6.8, z: 1.8, species: 'kusunoki', scale: 1.12 },
+  { id: 21, x: 5.8, z: -2.4, species: 'kaede', scale: 1.15 },
 
   // 鸟居正后方与上段弯曲山路内侧的高耸主干与透光林冠
-  { id: 22, x: -0.55, z: -7.6, species: 'kusunoki', scale: 1.22 },
-  { id: 23, x: 0.45, z: -8.6, species: 'kusunoki', scale: 1.2 },
-  { id: 24, x: -2.4, z: -5.6, species: 'kaede', scale: 1.22 },
-  { id: 25, x: 3.6, z: -5.2, species: 'kaede', scale: 1.2 },
-  { id: 26, x: -1.65, z: -6.6, species: 'kusunoki', scale: 1.18 }
+  { id: 22, x: -0.55, z: -7.6, species: 'kusunoki', scale: 1.18 },
+  { id: 23, x: 0.45, z: -8.6, species: 'kusunoki', scale: 1.16 },
+  { id: 24, x: -2.4, z: -5.6, species: 'kaede', scale: 1.20 },
+  { id: 25, x: 3.6, z: -5.2, species: 'kaede', scale: 1.16 },
+  { id: 26, x: -1.65, z: -6.6, species: 'kusunoki', scale: 1.16 },
+
+  // 后景纵深密林带（填补鸟居后方与远景视野空白，营造层层叠叠的深山幽谷密林感）
+  { id: 27, x: -1.35, z: -9.8, species: 'sakaki', scale: 1.16 },
+  { id: 28, x: 0.15, z: -10.8, species: 'kusunoki', scale: 1.15 },
+  { id: 29, x: 1.65, z: -9.6, species: 'kaede', scale: 1.14 },
+  { id: 30, x: -2.65, z: -11.4, species: 'kusunoki', scale: 1.15 },
+  { id: 31, x: -0.75, z: -12.4, species: 'sakaki', scale: 1.16 },
+  { id: 32, x: 1.25, z: -12.4, species: 'kusunoki', scale: 1.14 },
+  { id: 33, x: 2.95, z: -11.2, species: 'sakaki', scale: 1.15 },
+  { id: 34, x: -3.35, z: -9.2, species: 'kaede', scale: 1.14 },
+  { id: 35, x: 4.65, z: -9.8, species: 'kusunoki', scale: 1.10 },
+  { id: 36, x: 2.35, z: -7.8, species: 'sakaki', scale: 1.14 },
+
+  // 左侧后方加密深林带（封堵左后方溪谷上空与鸟居左侧背景空隙）
+  { id: 37, x: -3.25, z: -3.4, species: 'sakaki', scale: 1.20 },
+  { id: 38, x: -3.35, z: -6.2, species: 'kusunoki', scale: 1.18 },
+  { id: 39, x: -4.15, z: -11.2, species: 'sakaki', scale: 1.18 },
+  { id: 40, x: -3.15, z: -12.2, species: 'kusunoki', scale: 1.16 },
+  { id: 41, x: -8.2, z: -0.6, species: 'kusunoki', scale: 1.22 },
+  { id: 42, x: -8.6, z: -4.2, species: 'kaede', scale: 1.20 },
+  { id: 43, x: -8.4, z: -8.2, species: 'kusunoki', scale: 1.18 },
+  { id: 44, x: -9.2, z: -11.8, species: 'sakaki', scale: 1.18 },
+  { id: 45, x: -9.6, z: -6.4, species: 'sakaki', scale: 1.18 },
+
+  // 右侧陡坡加密背景林带（在陡峭右侧山坡上层层叠叠铺满高大乔木，消除右侧背景空白）
+  { id: 46, x: 4.8, z: 3.6, species: 'kusunoki', scale: 1.14 },
+  { id: 47, x: 5.2, z: 0.4, species: 'sakaki', scale: 1.16 },
+  { id: 48, x: 4.9, z: -6.4, species: 'kusunoki', scale: 1.08 },
+  { id: 49, x: 5.6, z: -9.2, species: 'sakaki', scale: 1.12 },
+  { id: 50, x: 8.2, z: 4.2, species: 'kusunoki', scale: 1.08 },
+  { id: 51, x: 8.4, z: 0.2, species: 'kaede', scale: 1.12 },
+  { id: 52, x: 8.6, z: -3.8, species: 'kusunoki', scale: 1.02 },
+  { id: 53, x: 8.8, z: -8.4, species: 'sakaki', scale: 1.08 },
+  { id: 54, x: 8.2, z: -11.6, species: 'kusunoki', scale: 1.02 }
 ];
 
 /* ------------------------------------------------------------ 灌丛 */
@@ -518,7 +576,7 @@ export const SHRUBS = [
   { x: -3.2, z: -3.6, r: 0.95 },
   { x: -3.2, z: -6.8, r: 0.92 },
   { x: -4.2, z: -9.8, r: 0.92 },
-  // 右坡地前缘（贴合弧形石阶右侧山坡）
+  // 右坡地前缘与中后坡林下灌丛（贴合陡峭右侧山坡）
   { x: 3.3, z: 10.6, r: 0.92 },
   { x: 3.1, z: 8.2, r: 0.95 },
   { x: 2.7, z: 6.0, r: 0.9 },
@@ -527,14 +585,38 @@ export const SHRUBS = [
   { x: 3.1, z: -1.6, r: 0.95 },
   { x: 3.8, z: -4.2, r: 0.92 },
   { x: 5.2, z: -6.4, r: 0.92 },
-  // 溪流左外岸
+  { x: 4.5, z: 4.8, r: 0.95 },
+  { x: 4.6, z: 2.0, r: 0.94 },
+  { x: 4.4, z: -0.8, r: 0.95 },
+  { x: 4.8, z: -3.2, r: 0.94 },
+  { x: 6.2, z: 3.2, r: 0.96 },
+  { x: 6.4, z: -0.4, r: 0.95 },
+  { x: 6.4, z: -4.6, r: 0.95 },
+  { x: 6.2, z: -8.2, r: 0.94 },
+  // 溪流左外岸与左后方密林灌木
   { x: -5.4, z: 11.8, r: 0.9 },
   { x: -5.9, z: 3.2, r: 0.92 },
   { x: -6.1, z: -0.8, r: 0.95 },
   { x: -6.8, z: -4.6, r: 0.95 },
-  // 上段弯曲参道内侧与外侧收口
+  { x: -7.4, z: -2.4, r: 0.96 },
+  { x: -7.5, z: -6.8, r: 0.96 },
+  { x: -7.8, z: -9.6, r: 0.95 },
+  { x: -3.6, z: -8.2, r: 0.94 },
+  { x: -3.8, z: -11.4, r: 0.95 },
+  { x: -7.2, z: -12.0, r: 0.95 },
+  // 上段弯曲参道内侧与后景深林灌木层（封堵鸟居后方低处空洞）
   { x: -1.8, z: -4.8, r: 0.92 },
-  { x: 0.4, z: -7.2, r: 0.9 }
+  { x: 0.4, z: -7.2, r: 0.9 },
+  { x: -0.85, z: -6.4, r: 0.95 },
+  { x: 0.65, z: -6.8, r: 0.92 },
+  { x: -1.45, z: -8.2, r: 0.96 },
+  { x: -0.15, z: -8.8, r: 0.95 },
+  { x: 1.35, z: -8.4, r: 0.94 },
+  { x: -2.25, z: -9.6, r: 0.95 },
+  { x: 0.35, z: -10.2, r: 0.96 },
+  { x: 2.15, z: -9.8, r: 0.92 },
+  { x: -1.15, z: -11.2, r: 0.95 },
+  { x: 0.95, z: -11.5, r: 0.94 }
 ];
 
 /* ------------------------------------------------------------ 蕨类 */
@@ -638,21 +720,22 @@ export const PUDDLES = [
   return p;
 });
 
-/* ------------------------------------------------------------ 青苔斑（自动随弯曲石阶偏移） */
+/* ------------------------------------------------------------ 青苔斑（遵循「靠近溪流密集、靠近路边次之、路正中稀少」的片状分布） */
 
 export const MOSS_PATCHES = [
-  { host: 'step', step: 2, x: -0.45, r: 0.24 },
-  { host: 'step', step: 4, x: 1.1, r: 0.28 },
-  { host: 'step', step: 6, x: 0.05, r: 0.22 },
-  { host: 'step', step: 8, x: -0.7, r: 0.3 },
-  { host: 'step', step: 10, x: 1.35, r: 0.24 },
-  { host: 'step', step: 12, x: 0.4, r: 0.26 },
-  { host: 'step', step: 14, x: -0.2, r: 0.22 },
-  { host: 'step', step: 16, x: 1.05, r: 0.28 },
-  { host: 'step', step: 18, x: -0.6, r: 0.24 },
-  { host: 'step', step: 21, x: 0.75, r: 0.3 },
-  { host: 'step', step: 24, x: -0.35, r: 0.26 },
-  { host: 'step', step: 27, x: 1.2, r: 0.22 },
+  // 石阶靠溪侧（左侧 -X 边缘，连绵成片）与靠右路边（右侧 +X 边缘），避开台阶正中间踩踏区
+  { host: 'step', step: 2, x: -0.72, r: 0.34 },
+  { host: 'step', step: 4, x: 1.18, r: 0.30 },
+  { host: 'step', step: 6, x: -0.68, r: 0.36 },
+  { host: 'step', step: 8, x: -0.76, r: 0.36 },
+  { host: 'step', step: 10, x: 1.24, r: 0.28 },
+  { host: 'step', step: 12, x: -0.64, r: 0.34 },
+  { host: 'step', step: 14, x: -0.74, r: 0.35 },
+  { host: 'step', step: 16, x: 1.16, r: 0.30 },
+  { host: 'step', step: 18, x: -0.68, r: 0.34 },
+  { host: 'step', step: 21, x: -0.62, r: 0.34 },
+  { host: 'step', step: 24, x: -0.70, r: 0.32 },
+  { host: 'step', step: 27, x: 1.18, r: 0.28 },
   // 石上青苔
   { host: 'rock', rock: { list: 'wetRock', index: 0 }, r: 0.42 },
   { host: 'rock', rock: { list: 'wetRock', index: 1 }, r: 0.34 },

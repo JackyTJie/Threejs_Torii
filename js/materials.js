@@ -692,13 +692,35 @@ export function createMaterialLibrary() {
     flow: { speed: 0.04, scale: 0.9, strength: 0.38, overlayMode: 0 }
   });
 
-  /* ---------------- 林间薄雾 ---------------- */
+  /* ---------------- 林间薄雾与水流粒子材质 ---------------- */
+  M.waterSprayParticle = named(toon({
+    color: 0xeef6f3,
+    emissive: 0x061012,
+    emissiveIntensity: 0.04,
+    band: 'soft',
+    transparent: true,
+    opacity: 0.82,
+    depthWrite: false
+  }), 'waterSprayParticle');
+  applyShadowLift(M.waterSprayParticle, { lift: 0.14, knee: 0.45 });
+
+  M.waterFoamCluster = named(toon({
+    color: 0xe0eee9,
+    emissive: 0x050d0f,
+    emissiveIntensity: 0.03,
+    band: 'soft',
+    transparent: true,
+    opacity: 0.70,
+    depthWrite: false
+  }), 'waterFoamCluster');
+  applyShadowLift(M.waterFoamCluster, { lift: 0.12, knee: 0.42 });
+
   M.mistBand = named(new THREE.MeshBasicMaterial({
     color: PALETTE.skyMid,
     map: mistVeilTexture({ size: 512, seed: 131 }),
     transparent: true,
-    opacity: 0.1,
-    blending: THREE.AdditiveBlending,
+    opacity: 0.07,
+    blending: THREE.NormalBlending,
     depthWrite: false,
     side: THREE.DoubleSide
   }), 'mistBand');

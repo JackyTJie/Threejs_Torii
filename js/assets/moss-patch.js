@@ -65,9 +65,9 @@ const FILM_TILE = 0.22;
 const LUMP_TILE = 0.28;
 const PEBBLE_TILE = 0.12;
 
-const FLAKE_SHAPE = { widthSegments: 14, heightSegments: 8, wobble: 0.42, flatten: 0.30 };
-const FILM_SHAPE = { widthSegments: 12, heightSegments: 7, wobble: 0.34, flatten: 0.22 };
-const LUMP_SHAPE = { widthSegments: 12, heightSegments: 9, wobble: 0.52, flatten: 0.46 };
+const FLAKE_SHAPE = { widthSegments: 14, heightSegments: 8, wobble: 0.38, flatten: 0.16 };
+const FILM_SHAPE = { widthSegments: 12, heightSegments: 7, wobble: 0.32, flatten: 0.12 };
+const LUMP_SHAPE = { widthSegments: 12, heightSegments: 9, wobble: 0.42, flatten: 0.24 };
 const PEBBLE_SHAPE = { widthSegments: 9, heightSegments: 6, wobble: 0.42, flatten: 0.6 };
 
 /** 立面苔膜的竖直高度（米）：上限取 riser 高 0.145，超过就翻过踏板 */
@@ -76,20 +76,20 @@ const FILM_SINK = 0.012;
 const FILM_EMBED = 0.006;
 
 /** 苔片嵌入宿主的深度（米）；石块宿主按尺寸加大，见文件头 */
-const SINK_BY_HOST = { step: 0.01, ground: 0.022 };
+const SINK_BY_HOST = { step: 0.012, ground: 0.024 };
 const ROCK_SINK_BASE = 0.028;
 const ROCK_SINK_GAIN = 0.18;
-const ROCK_FLAKE_MAX = 0.046;
+const ROCK_FLAKE_MAX = 0.068;
 
-/** 苔片半径 / 群落半径（在部分山石与溪石顶面中央形成自然团簇状立体青苔斑，绝不悬挑成绿盘子） */
-const FLAKE_RADIUS = { step: [0.18, 0.30], rock: [0.08, 0.14], ground: [0.14, 0.24] };
-const LUMP_RADIUS = [0.08, 0.14];
-const PEBBLE_RADIUS = [0.06, 0.11];
+/** 苔片半径 / 群落半径（连绵成片的扁平苔毯，消除孤立小圆点感） */
+const FLAKE_RADIUS = { step: [0.24, 0.38], rock: [0.11, 0.18], ground: [0.22, 0.36] };
+const LUMP_RADIUS = [0.12, 0.20];
+const PEBBLE_RADIUS = [0.05, 0.09];
 
 const MIX = {
-  step: { flakes: [5, 8], films: [2, 3], lumps: [1, 2], pebbles: [2, 3] },
-  rock: { flakes: [2, 3], films: [0, 0], lumps: [1, 2], pebbles: [2, 3] },
-  ground: { flakes: [5, 7], films: [0, 1], lumps: [2, 3], pebbles: [3, 4] }
+  step: { flakes: [6, 9], films: [3, 4], lumps: [1, 2], pebbles: [1, 2] },
+  rock: { flakes: [3, 4], films: [1, 2], lumps: [1, 2], pebbles: [1, 2] },
+  ground: { flakes: [6, 8], films: [2, 3], lumps: [1, 2], pebbles: [2, 3] }
 };
 
 /** 苔群整体朝阴面偏移：与示例工程一致的 shade 方向，让苔不是各向同性的圆饼 */
@@ -216,9 +216,9 @@ function buildColony(root, p, index, M) {
         z: p.z + dz,
         bottom: p.y - embed,
         ry: rand() * Math.PI * 2,
-        sx: 0.85 + rand() * 0.25,
-        sy: 0.7 + rand() * 0.4,
-        sz: 0.85 + rand() * 0.25
+        sx: 1.25 + rand() * 0.42,
+        sy: 0.28 + rand() * 0.18,
+        sz: 1.25 + rand() * 0.42
       },
       FLAKE_TILE
     ));
@@ -238,11 +238,11 @@ function buildColony(root, p, index, M) {
       {
         x: p.x + dx,
         z: p.z + dz,
-        bottom: p.y - rl * 0.55 - radialDrop,
+        bottom: p.y - rl * 0.32 - radialDrop,
         ry: rand() * Math.PI * 2,
-        sx: 0.85 + rand() * 0.25,
-        sy: 0.85 + rand() * 0.3,
-        sz: 0.85 + rand() * 0.25
+        sx: 1.15 + rand() * 0.35,
+        sy: 0.36 + rand() * 0.20,
+        sz: 1.15 + rand() * 0.35
       },
       LUMP_TILE
     ));

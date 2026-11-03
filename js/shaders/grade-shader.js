@@ -48,15 +48,15 @@ export const GRADE_FS = /* glsl */ `
     return mix( lo, hi, step( vec3( 0.0031308 ), c ) );
   }
 
-  // 雨后深林阴天 LUT：暗部深邃墨绿青、中间调通透湿润、高光清冷柔和，朱红焦点独立保护
+  // 雨后深林阴天 LUT：极暗部保持纯净深蓝黑夜空，中暗部墨绿、中间调通透湿润，朱红焦点独立保护
   vec3 rainForestLUT( vec3 c, float l ) {
-    vec3 shadowTint = vec3( 0.905, 0.965, 0.955 );
+    vec3 nightShadowTint = vec3( 0.94, 0.96, 1.02 );
+    vec3 shadowTint = mix( nightShadowTint, vec3( 0.92, 0.965, 0.955 ), smoothstep( 0.02, 0.14, l ) );
     vec3 midTint    = vec3( 0.965, 1.015, 0.985 );
     vec3 highTint   = vec3( 0.980, 1.010, 1.025 );
     float s = smoothstep( 0.03, 0.34, l );
     float h = smoothstep( 0.56, 0.92, l );
     vec3 tint = mix( mix( shadowTint, midTint, s ), highTint, h );
-    // 朱红色相保护（红显著高于绿和蓝时减少冷色偏侵蚀，让鸟居朱红在幽暗绿林中浓郁通透）
     float vermilionMask = clamp( ( c.r - max( c.g, c.b ) ) * 2.5, 0.0, 1.0 );
     vec3 finalTint = mix( tint, vec3( 1.04, 0.98, 0.94 ), vermilionMask * 0.75 );
     return mix( c, c * finalTint, uLutStrength );
@@ -76,9 +76,10 @@ export const GRADE_FS = /* glsl */ `
     float soft = clamp( ( hi - knee ) / max( 1.0 - knee, 0.001 ), 0.0, 1.0 );
     c -= c * soft * uHighlightSoftening;
 
-    // 3) 暗部抬升：只抬暗侧，保住雨后深林暗部枝叶与石阶层次
-    float darkMask = 1.0 - smoothstep( 0.0, 0.42, luma( c ) );
-    c += uLift * darkMask * ( 1.0 - c );
+    // 3) 暗部抬升：对接近纯黑的夜空与黑山剪影不做发灰抬升
+    float l0 = luma( c );
+    float darkMask = smoothstep( 0.015, 0.08, l0 ) * ( 1.0 - smoothstep( 0.08, 0.42, l0 ) );
+    c += uLift * 0.55 * darkMask * ( 1.0 - c );
 
     // 4) 雨后深林 LUT 与色温微调
     float l = luma( c );

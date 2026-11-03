@@ -110,8 +110,7 @@ node tools/asset-check.mjs
 ## Credits & Acknowledgments
 
 ### AI Models & Engineering Credits
-- **Gemini 4**
-- **Argon**
+- **Gemini 4 Argon**
 - **Strata-Qwen 3.8 flash next**
 
 ### Open-Source Projects Referenced & Adopted
