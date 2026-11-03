@@ -1,10 +1,11 @@
-// 山涧叠瀑清澈水体片元着色器：
-// 融合 danielsofran/threejs-water-shader 与 jeantimex/threejs-water 的核心水体光学特征，
-// 针对雨后深林幽暗色调专门压暗适配，消除死白镜面反光，呈现四重水体细节：
-// 1) 清澈透底（Clear Depth Absorption）：低不透明度 + 深潭/浅滩比尔定律吸收，清晰透出溪底湿泥与卵石；
-// 2) 粼粼波光（Voronoi Cellular Caustics + Micro-Glints）：双层错速蜂窝焦散网与四向波纹法线微闪高光；
-// 3) 漩涡回流（Swirling Vortex / Eddy Field）：石畔与瀑下深潭的旋转涡流纹理与环状水纹；
-// 4) 叠瀑激荡（Cascade White-Water Agitation）：根据水面坡度（小瀑布跌水处法线倾斜）与湍流噪声生成丝状瀑流与碎沫。
+// 山涧溪流光学水体与水底实时折射焦散着色器（无贴图、无规则点阵、清澈见底）：
+// 1) 水底折射焦散（RIVERBED_CAUSTICS_FRAG）：
+//    直接作用在溪床泥沙（soilStreamBed）、溪底鹅卵石（stonePebble）与溪石（stoneStream）上，
+//    根据水面波浪法线的斯涅尔折射（Snell's Law, IOR 1.0 -> 1.333）与光线雅可比散度（Jacobian Area Ratio），
+//    在水底泥土与卵石表面投射出随波流动的澄澈焦散亮网，并根据水深做比尔-朗伯定律（Beer-Lambert）青翠色消光；
+// 2) 清澈光学水面（WATER_FLOW_FRAG）：
+//    彻底摒弃假贴图与规则正弦高光点阵，采用纯物理菲涅尔反射（Schlick Fresnel）+ 切向流线微澜，
+//    垂直俯视时水体极度澄澈透明（alpha 仅 0.14~0.26），直视水底焦散与卵石；仅在掠射角与小瀑布跌水处泛起柔和天光与丝状水花。
 
 export const WATER_FLOW_UNIFORMS = /* glsl */ `
   uniform float uTime;
@@ -24,11 +25,6 @@ export const WATER_FLOW_FRAG = /* glsl */ `
     return fract( p.x * p.y );
   }
 
-  vec2 waterHash22( vec2 p ) {
-    float n = waterHash21( p );
-    return vec2( n, waterHash21( p + n + 17.3 ) );
-  }
-
   float waterNoise( vec2 p ) {
     vec2 i = floor( p );
     vec2 f = fract( p );
@@ -40,43 +36,35 @@ export const WATER_FLOW_FRAG = /* glsl */ `
     return mix( mix( a, b, u.x ), mix( c, d, u.x ), u.y );
   }
 
-  // Voronoi 蜂窝焦散网：模拟清澈浅溪中的粼粼波光与水底焦散亮网
-  float waterCausticLayer( vec2 uv, float time ) {
-    vec2 g = floor( uv );
-    vec2 f = fract( uv );
-    float minDist1 = 1.0;
-    float minDist2 = 1.0;
-    for ( int y = -1; y <= 1; y++ ) {
-      for ( int x = -1; x <= 1; x++ ) {
-        vec2 lattice = vec2( float( x ), float( y ) );
-        vec2 rnd = waterHash22( g + lattice );
-        vec2 point = lattice + 0.5 + 0.42 * sin( time * 1.35 + 6.2831853 * rnd );
-        float d = length( point - f );
-        if ( d < minDist1 ) {
-          minDist2 = minDist1;
-          minDist1 = d;
-        } else if ( d < minDist2 ) {
-          minDist2 = d;
-        }
-      }
+  float waterFbm( vec2 p ) {
+    float v = 0.0;
+    float a = 0.5;
+    mat2 rot = mat2( 0.80, -0.60, 0.60, 0.80 );
+    for ( int i = 0; i < 4; i++ ) {
+      v += a * waterNoise( p );
+      p = rot * p * 2.03 + vec2( 13.7, -9.2 );
+      a *= 0.5;
     }
-    float edge = clamp( minDist2 - minDist1, 0.0, 1.0 );
-    return pow( 1.0 - smoothstep( 0.0, 0.28, edge ), 2.2 );
+    return v;
   }
 
-  // 局部漩涡场：在石块背水侧与小瀑布落水潭生成旋转回流涡纹
-  vec2 waterVortexWarp( vec2 p, float time ) {
-    vec2 cell = floor( p * 0.55 );
-    vec2 local = fract( p * 0.55 ) - 0.5;
-    float r = length( local );
-    float seed = waterHash21( cell );
-    float spinDir = seed > 0.5 ? 1.0 : -1.0;
-    float swirl = exp( -r * r * 9.5 ) * ( 2.6 * spinDir );
-    float angle = swirl + time * 1.15 * spinDir;
-    float s = sin( angle );
-    float c = cos( angle );
-    vec2 rotated = vec2( local.x * c - local.y * s, local.x * s + local.y * c );
-    return ( cell + rotated + 0.5 ) / 0.55;
+  // 计算曲折溪流中心线近似 X 坐标（与 layout.js STREAM_PATH 对齐）
+  float streamApproxCenterX( float z ) {
+    return -3.25 + 0.58 * sin( z * 0.36 + 0.5 ) + 0.28 * cos( z * 0.21 - 0.8 );
+  }
+
+  // 根据连续多波叠加场求取解析波浪梯度，杜绝规则网格点阵
+  vec2 streamWaveGradient( vec2 xz, float time ) {
+    float cx = streamApproxCenterX( xz.y );
+    float lat = xz.x - cx;
+    float s = xz.y * 1.04;
+    vec2 q1 = vec2( lat * 2.4 + sin( s * 0.7 ) * 0.4, s * 2.1 - time * 2.8 );
+    vec2 q2 = vec2( lat * 4.1 - cos( s * 1.1 ) * 0.3, s * 3.8 - time * 4.2 );
+    float eps = 0.06;
+    float h0 = waterFbm( q1 ) * 0.65 + waterFbm( q2 ) * 0.35;
+    float hx = waterFbm( q1 + vec2( eps, 0.0 ) ) * 0.65 + waterFbm( q2 + vec2( eps, 0.0 ) ) * 0.35;
+    float hz = waterFbm( q1 + vec2( 0.0, eps ) ) * 0.65 + waterFbm( q2 + vec2( 0.0, eps ) ) * 0.35;
+    return ( vec2( hx - h0, hz - h0 ) / eps ) * 0.16;
   }
 
   vec4 waterFlow( vec3 color, float baseAlpha, vec3 worldPos, vec3 normal, vec3 viewDir, vec2 localUv ) {
@@ -86,77 +74,161 @@ export const WATER_FLOW_FRAG = /* glsl */ `
     float along = dot( p, flowDir );
     float lateral = dot( p, latDir );
 
-    // 1. 漩涡扭曲坐标 + 顺流推进
-    vec2 warped = waterVortexWarp( p, uTime * uFlowSpeed * 4.0 );
-    float wAlong = dot( warped, flowDir ) * uFlowScale;
-    float wLat = dot( warped, latDir );
+    vec2 grad = streamWaveGradient( p, uTime * ( 0.8 + uFlowSpeed * 2.5 ) );
+    vec3 nrm = normalize( normal + vec3( -grad.x, 0.0, -grad.y ) );
+    vec3 V = normalize( viewDir );
+    float ndv = clamp( abs( dot( nrm, V ) ), 0.0, 1.0 );
 
-    // 2. 双层错速 Voronoi 焦散（粼粼波光）
-    vec2 uv1 = vec2( wAlong * 3.4 - uTime * uFlowSpeed * 5.2, wLat * 3.2 + sin( along * 1.3 ) * 0.35 );
-    vec2 uv2 = vec2( wAlong * 4.6 - uTime * uFlowSpeed * 3.7 + 1.7, wLat * 4.4 - cos( along * 1.7 ) * 0.3 );
-    float c1 = waterCausticLayer( uv1, uTime * 0.9 );
-    float c2 = waterCausticLayer( uv2, -uTime * 1.1 );
-    float caustics = clamp( c1 * 0.65 + c2 * 0.65, 0.0, 1.0 );
+    // 物理 Schlick 菲涅尔：垂直俯视时极低反射、极高透射（清澈见底），掠射角柔和映出林冠天光
+    float fresnel = 0.02 + 0.42 * pow( 1.0 - ndv, 4.2 );
 
-    // 3. 漩涡环纹（Eddy Rings）
-    vec2 eddyCell = fract( p * 0.62 + vec2( 0.15 * sin( uTime * 0.4 ), -uTime * uFlowSpeed * 1.2 ) ) - 0.5;
-    float eddyR = length( eddyCell );
-    float eddyAng = atan( eddyCell.y, eddyCell.x );
-    float eddySpiral = sin( eddyR * 28.0 - eddyAng * 2.0 - uTime * 2.6 );
-    float eddyMask = smoothstep( 0.42, 0.12, eddyR ) * smoothstep( 0.03, 0.12, eddyR ) * max( 0.0, eddySpiral );
+    // 顺流拉丝流线（用于小瀑布跌水与急流微澜，全部采用非周期 FBM 连续流场）
+    vec2 streamUv = vec2( lateral * 5.2 + grad.x * 1.4, along * 1.8 - uTime * uFlowSpeed * 9.5 );
+    float ribbonA = waterFbm( streamUv );
+    float ribbonB = waterFbm( streamUv * vec2( 1.9, 1.35 ) + vec2( 7.4, -uTime * uFlowSpeed * 5.0 ) );
+    float filament = smoothstep( 0.52, 0.78, ribbonA * 0.62 + ribbonB * 0.38 );
 
-    // 4. 小瀑布跌水与湍流激荡（Cascade & Agitation）
-    vec3 nrm = normalize( normal );
-    float slopeTilt = clamp( ( 1.0 - abs( nrm.y ) ) * 4.8, 0.0, 1.0 );
-    float streakNoise = waterNoise( vec2( wLat * 14.0, along * 3.2 - uTime * uFlowSpeed * 16.0 ) );
-    float fineFoam = waterNoise( vec2( wLat * 26.0, along * 7.5 - uTime * uFlowSpeed * 22.0 ) );
-    float cascadeStreaks = slopeTilt * smoothstep( 0.32, 0.78, streakNoise * 0.65 + fineFoam * 0.35 );
+    // 小瀑布坡度检测：水面越陡，重力加速跌水水花越明显
+    float slopeTilt = clamp( ( 1.0 - abs( nrm.y ) ) * 4.5, 0.0, 1.0 );
+    float cascadeFoam = slopeTilt * filament;
 
-    // 跌水潭底部的冲击碎沫带
-    float plungeWave = sin( along * 1.57 - 0.4 );
-    float plungePool = pow( max( 0.0, plungeWave ), 8.0 ) * smoothstep( 0.42, 0.82, streakNoise );
+    // 岸边与溪石边缘柔化度
+    float cx = streamApproxCenterX( p.y );
+    float bankDist = abs( p.x - cx );
+    float bankShore = smoothstep( 0.92, 1.35, bankDist );
+    float edgeFade = 1.0 - smoothstep( 1.15, 1.48, bankDist );
 
-    // 5. 细碎波光闪烁（Sparkle Glints，克制不刺眼，绝不像镜子）
-    float ripple1 = sin( along * 18.0 + lateral * 9.0 - uTime * 4.2 );
-    float ripple2 = cos( along * 23.0 - lateral * 14.0 - uTime * 5.1 );
-    float glint = pow( max( 0.0, ripple1 * ripple2 ), 6.0 ) * ( 0.4 + 0.6 * caustics );
+    // 幽深森林林冠天光反射色与清溪水体透射色
+    vec3 canopyReflect = vec3( 0.20, 0.34, 0.27 );
+    vec3 foamTint = vec3( 0.50, 0.64, 0.58 );
+    vec3 shallowTone = uShallowColor * 0.90;
+    vec3 deepTone = uDeepColor * 0.82;
 
-    // 6. 幽暗深林水色合成（压暗镜面反射，突出清澈水底层次、翠绿焦散与柔和泡沫）
-    float ndv = abs( dot( nrm, normalize( viewDir ) ) );
-    float fresnel = pow( 1.0 - clamp( ndv, 0.0, 1.0 ), 2.8 ) * 0.28;
-
-    vec3 deepTone = uDeepColor * 0.74;
-    vec3 shallowTone = uShallowColor * 0.88;
-    vec3 body = mix( deepTone, shallowTone, 0.22 + 0.56 * caustics + 0.22 * eddyMask );
-
-    // 柔和青白泡沫色（适配雨后阴天幽暗森林，不过曝）
-    vec3 foamColor = vec3( 0.42, 0.56, 0.50 );
-    vec3 glintColor = vec3( 0.54, 0.72, 0.64 );
-
-    // 针对跌水水帘（uOverlayMode == 1）与漩涡盘（uOverlayMode == 2）做边缘羽化与丝状镂空，消除生硬多边形块感
+    // 1) 粒子流体与水花（uOverlayMode == 3）
+    if ( uOverlayMode > 2.5 ) {
+      vec3 dropletCol = mix( shallowTone * 1.15, foamTint * 1.12, 0.65 );
+      return vec4( dropletCol, baseAlpha * 0.72 );
+    }
+    // 2) 瀑下回流旋涡泡沫丝（uOverlayMode == 2）
     if ( uOverlayMode > 1.5 ) {
       vec2 centered = localUv - vec2( 0.5 );
       float dist = length( centered ) * 2.0;
       float ang = atan( centered.y, centered.x );
-      float radialFade = smoothstep( 1.0, 0.28, dist ) * smoothstep( 0.04, 0.22, dist );
-      float spiral = 0.5 + 0.5 * sin( dist * 18.0 - ang * 3.0 - uTime * 2.4 + streakNoise * 3.2 );
-      float ringMask = radialFade * smoothstep( 0.36, 0.84, spiral * 0.65 + fineFoam * 0.35 );
-      vec3 eddyCol = mix( shallowTone * 0.85, foamColor, 0.55 + 0.45 * spiral );
-      return vec4( eddyCol, baseAlpha * ringMask );
-    } else if ( uOverlayMode > 0.5 ) {
-      float edgeX = smoothstep( 0.0, 0.22, localUv.x ) * smoothstep( 1.0, 0.78, localUv.x );
-      float edgeY = smoothstep( 0.0, 0.18, localUv.y ) * smoothstep( 1.0, 0.76, localUv.y );
-      float threads = smoothstep( 0.34, 0.82, streakNoise * 0.62 + fineFoam * 0.38 );
-      float curtainAlpha = baseAlpha * edgeX * edgeY * ( 0.25 + 0.75 * threads );
-      vec3 curtainCol = mix( shallowTone * 0.82, foamColor * 1.06, threads );
+      float radialFade = smoothstep( 1.0, 0.24, dist ) * smoothstep( 0.06, 0.26, dist );
+      vec2 swirlUv = vec2( dist * 3.5, ang * 0.95 - uTime * 1.6 + dist * 4.2 );
+      float swirlBand = smoothstep( 0.48, 0.76, waterFbm( swirlUv * 2.2 ) );
+      float alphaOut = baseAlpha * radialFade * swirlBand * 0.68;
+      vec3 eddyCol = mix( shallowTone, foamTint, 0.45 + 0.55 * swirlBand );
+      return vec4( eddyCol, alphaOut );
+    }
+    // 3) 样条曲线瀑布流管水帘（uOverlayMode == 1）
+    if ( uOverlayMode > 0.5 ) {
+      float edgeX = smoothstep( 0.0, 0.24, localUv.x ) * smoothstep( 1.0, 0.76, localUv.x );
+      float edgeY = smoothstep( 0.0, 0.18, localUv.y ) * smoothstep( 1.0, 0.78, localUv.y );
+      vec2 fallUv = vec2( localUv.x * 6.5, localUv.y * 2.6 - uTime * 3.8 );
+      float fallThreads = smoothstep( 0.42, 0.78, waterFbm( fallUv ) );
+      float curtainAlpha = baseAlpha * edgeX * edgeY * ( 0.16 + 0.68 * fallThreads );
+      vec3 curtainCol = mix( shallowTone * 0.88, foamTint, fallThreads );
       return vec4( curtainCol, curtainAlpha );
     }
 
-    float foamAmount = clamp( cascadeStreaks * 0.85 + plungePool * 0.42 + eddyMask * 0.24, 0.0, 0.86 );
-    vec3 waterBase = mix( color * 0.48 + body * 0.52, foamColor, foamAmount * uFlowStrength );
-    vec3 causticGlow = shallowTone * caustics * 0.34 + glintColor * glint * 0.44 + shallowTone * fresnel;
-    float outAlpha = clamp( baseAlpha * ( 0.64 + 0.42 * caustics + 0.65 * foamAmount ), 0.18, 0.82 );
+    // 4) 主清澈水面（uOverlayMode == 0）：
+    // 垂直看去清澈见底（alpha 极低，水下河床焦散与鹅卵石一目了然），斜看泛起柔和菲涅尔林冠反光与流线微澜
+    vec3 waterTint = mix( deepTone, shallowTone, 0.35 + 0.45 * filament );
+    vec3 surfaceCol = mix( waterTint, canopyReflect, fresnel );
+    float shoreFoam = bankShore * smoothstep( 0.54, 0.78, ribbonB ) * 0.32;
+    float totalFoam = clamp( cascadeFoam * 0.82 + shoreFoam, 0.0, 0.78 );
+    surfaceCol = mix( surfaceCol, foamTint, totalFoam );
 
-    return vec4( waterBase + causticGlow * uFlowStrength, outAlpha );
+    // 关键：平缓深潭处 alpha 低至 0.16~0.28，绝不遮挡水底卵石与水底焦散；仅在菲涅尔掠射角与瀑布跌水处升高
+    float clearAlpha = clamp( ( 0.15 + fresnel * 0.48 + totalFoam * 0.52 + filament * 0.06 ) * edgeFade, 0.08, 0.74 );
+    return vec4( surfaceCol, clearAlpha );
+  }
+`;
+
+/**
+ * 水底河床与水中鹅卵石专属：实时斯涅尔折射焦散（Snell's Law Refractive Caustics）+ 比尔定律水深消光。
+ * 让焦散真正长在「水下的泥土、砂砾与石头表面」，从而透过高透明水面呈现「清可见底、澄澈透亮」的真实山涧质感！
+ */
+export const RIVERBED_CAUSTICS_UNIFORMS = /* glsl */ `
+  uniform float uCausticTime;
+  uniform vec3 uCausticLightDir;
+  uniform vec3 uWaterAbsorbShallow;
+  uniform vec3 uWaterAbsorbDeep;
+`;
+
+export const RIVERBED_CAUSTICS_FRAG = /* glsl */ `
+  float bedHash21( vec2 p ) {
+    p = fract( p * vec2( 127.1, 311.7 ) );
+    p += dot( p, p + 34.23 );
+    return fract( p.x * p.y );
+  }
+
+  float bedNoise( vec2 p ) {
+    vec2 i = floor( p );
+    vec2 f = fract( p );
+    vec2 u = f * f * ( 3.0 - 2.0 * f );
+    return mix(
+      mix( bedHash21( i ), bedHash21( i + vec2( 1.0, 0.0 ) ), u.x ),
+      mix( bedHash21( i + vec2( 0.0, 1.0 ) ), bedHash21( i + vec2( 1.0, 1.0 ) ), u.x ),
+      u.y
+    );
+  }
+
+  // 计算水波表面高度场，供斯涅尔折射与雅可比面积收敛度（Real-time Caustics Area Ratio）使用
+  float surfaceWaveHeightAt( vec2 xz, float t ) {
+    vec2 p1 = vec2( xz.x * 2.1, xz.y * 1.6 - t * 1.85 );
+    vec2 p2 = vec2( xz.x * 3.4 - 0.6 * xz.y, xz.y * 2.9 - t * 2.65 );
+    float h = ( bedNoise( p1 ) - 0.5 ) * 0.045 + ( bedNoise( p2 ) - 0.5 ) * 0.025;
+    p1 = mat2( 0.8, -0.6, 0.6, 0.8 ) * p1 * 2.02;
+    h += ( bedNoise( p1 + vec2( 0.0, -t * 1.4 ) ) - 0.5 ) * 0.015;
+    return h;
+  }
+
+  vec3 applyRiverbedCaustics( vec3 bedColor, vec3 worldPos, vec3 normal ) {
+    // 仅在溪谷走廊（x < -1.15）的水下或湿岸区域激活水底折射焦散
+    float streamMask = smoothstep( -1.10, -1.85, worldPos.x ) * smoothstep( -6.2, -5.0, worldPos.x );
+    if ( streamMask <= 0.001 ) return bedColor;
+
+    // 估算当前 z 处的溪流水面高度 wy（与 layout.js valleyLevel + STREAM_CASCADES 一致）
+    float u = clamp( ( 11.6 - worldPos.z ) / ( 11.6 - ( -9.2 ) ), 0.0, 1.0 );
+    float approxWy = 0.25 + ( 3.25 - 0.30 ) * pow( u, 1.08 );
+    float waterDepth = clamp( approxWy - worldPos.y + 0.14, 0.0, 0.65 );
+    float submergeMask = smoothstep( 0.0, 0.06, waterDepth ) * streamMask;
+    if ( submergeMask <= 0.001 ) return bedColor;
+
+    // 采样水面波浪法线并计算斯涅尔折射光线（IOR_AIR / IOR_WATER = 1.0 / 1.333 = 0.75）
+    float eps = 0.055;
+    vec2 xz = worldPos.xz;
+    float hC = surfaceWaveHeightAt( xz, uCausticTime );
+    float hR = surfaceWaveHeightAt( xz + vec2( eps, 0.0 ), uCausticTime );
+    float hU = surfaceWaveHeightAt( xz + vec2( 0.0, eps ), uCausticTime );
+    float hL = surfaceWaveHeightAt( xz - vec2( eps, 0.0 ), uCausticTime );
+    float hD = surfaceWaveHeightAt( xz - vec2( 0.0, eps ), uCausticTime );
+
+    vec3 surfNormal = normalize( vec3( ( hL - hR ) / ( 2.0 * eps ), 1.0, ( hD - hU ) / ( 2.0 * eps ) ) );
+    vec3 lightDir = normalize( uCausticLightDir );
+    vec3 refRay = refract( -lightDir, surfNormal, 0.75 );
+
+    // 利用水面曲率（拉普拉斯算子 ∇²h）解析求解折射光线在河床深度 waterDepth 处的聚焦强度（Caustics Convergence）
+    float laplacian = ( hR + hL + hU + hD - 4.0 * hC ) / ( eps * eps );
+    float focusDepth = clamp( waterDepth * 1.8, 0.08, 0.55 );
+    float convergence = clamp( 1.0 - laplacian * focusDepth * 0.42, 0.25, 2.8 );
+    float causticNet = pow( max( 0.0, convergence - 0.72 ), 1.65 );
+
+    // 叠加折射偏移后的双层微焦散网，形成清澈山涧水底灵动光网
+    vec2 refractedXz = xz + refRay.xz * ( waterDepth / max( 0.25, abs( refRay.y ) ) );
+    float net2 = bedNoise( refractedXz * 4.8 + vec2( 0.0, -uCausticTime * 1.6 ) );
+    causticNet = clamp( causticNet * 0.72 + smoothstep( 0.62, 0.88, net2 ) * 0.45, 0.0, 1.35 );
+
+    // 比尔-朗伯定律（Beer-Lambert Law）：清澈浅水保留泥土与卵石原色并提亮焦散，深潭过渡至澄澈冷翠色
+    float absorb = 1.0 - exp( -waterDepth * 2.4 );
+    vec3 tintedBed = mix( bedColor * 1.08, bedColor * uWaterAbsorbShallow * 1.45, absorb * 0.62 );
+    tintedBed = mix( tintedBed, uWaterAbsorbDeep * 0.65, absorb * absorb * 0.38 );
+
+    float upFacing = clamp( dot( normalize( normal ), vec3( 0.0, 1.0, 0.0 ) ) * 0.7 + 0.3, 0.0, 1.0 );
+    vec3 causticLight = vec3( 0.46, 0.72, 0.60 ) * causticNet * upFacing * ( 1.0 - absorb * 0.35 );
+
+    return mix( bedColor, tintedBed + causticLight * 0.52, submergeMask );
   }
 `;

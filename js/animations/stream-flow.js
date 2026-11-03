@@ -1,11 +1,24 @@
-// 山涧溪流动态（S7.4）：
-// 1) 水面多波叠加顶点位移 + 跌水激荡高频起伏 + 逐帧法线重算；
-// 2) 推进 WATER_FLOW_MATERIALS 的 uTime uniform，驱动 Voronoi 粼粼波光焦散、漩涡与瀑布白沫流动；
-// 3) 驱动瀑下深潭与石畔漩涡环（userData.eddySpin）的旋转与呼吸脉动，以及瀑布水帘（userData.cascadeCurtain）的激荡微振。
+// 山涧溪流动态（方法一：CatmullRomCurve3 样条流场 + 拉格朗日物理流体粒子碰撞绕流 + 水底实时折射焦散）：
+// 1) 推进 WATER_FLOW_MATERIALS 与 RIVERBED_CAUSTIC_MATERIALS 的时间 uniform，驱动水底折射焦散与清澈水面微澜；
+// 2) 实时解算 1,080 颗流体微粒（fluidParticles）与 360 颗飞沫微粒（splashParticles）的拉格朗日物理运动：
+//    - 沿 CatmullRomCurve3 切向速度场平流推进；
+//    - 在 6 级小瀑布处受重力加速度加速跌落；
+//    - 遇 STREAM_STONES 与石堰障碍物时发生真实的法向弹性反射与切向卡门涡街绕流（水流绕石碰撞）；
+// 3) 水面顶点连续流场波动（含石块障碍物环形驻波与尾流）及逐帧平滑法线重算。
 import * as THREE from 'three';
 import { ANIM } from '../config.js';
-import { STREAM_PATH, cascadeFactorAt, streamDistance, streamTAt, streamWidthAt } from '../layout.js';
-import { WATER_FLOW_MATERIALS, tuneMaterial } from '../toon.js';
+import {
+  STREAM_PATH,
+  cascadeFactorAt,
+  streamBankHalf,
+  streamCenterX,
+  streamDistance,
+  streamTAt,
+  streamWidthAt,
+  waterY
+} from '../layout.js';
+import { getStreamObstacles } from '../assets/stream.js';
+import { RIVERBED_CAUSTIC_MATERIALS, WATER_FLOW_MATERIALS, tuneMaterial } from '../toon.js';
 import { registerAnimation } from './registry.js';
 
 export const STREAM_FLOW_NAME = 'streamFlow';
@@ -33,7 +46,10 @@ function lateralTaper(x, z) {
   return Math.max(0, 1 - lateral * lateral);
 }
 
-/** 复合波场：主顺流涌波 + 交叉细碎涟漪 + 漩涡回流波 + 瀑布跌水激荡 */
+/**
+ * 含障碍物碰撞反射波的水面物理复合波场：
+ * 主顺流行波 + 交叉斜波 + 溪石障碍物迎水弓形激波与背水卡门涡街尾迹
+ */
 export function waterWave(x, z, time, params = ANIM.stream) {
   const half = Math.max(0.2, streamWidthAt(streamTAt(z)) / 2);
   const lateral = THREE.MathUtils.clamp(streamDistance(x, z) / half, -1, 1);
@@ -43,14 +59,29 @@ export function waterWave(x, z, time, params = ANIM.stream) {
   const w1 = k1 * params.speed;
   const w2 = k2 * params.rippleSpeed;
 
-  const long = Math.sin(s * k1 - time * w1) * 0.52;
-  const short = Math.sin(s * k2 + lateral * 2.8 - time * w2) * 0.28;
-  const cross = Math.sin(lateral * 4.2 + s * 0.85 - time * params.rippleSpeed * 2.1) * 0.16;
-  // 漩涡驻波与瀑布跌水段高频激荡
-  const eddy = Math.cos(Math.hypot(x * 2.4, z * 2.4) * 3.2 - time * 3.4) * 0.12;
-  const cascadeBoost = 1 + cascadeFactorAt(z) * 0.85;
+  const long = Math.sin(s * k1 - time * w1) * 0.46;
+  const short = Math.sin(s * k2 + lateral * 2.4 - time * w2) * 0.24;
+  const cross = Math.sin(lateral * 3.8 + s * 0.9 - time * params.rippleSpeed * 1.9) * 0.14;
 
-  return (long + short + cross + eddy) * params.displacementMax * cascadeBoost;
+  // 溪石与堰石障碍物碰撞反射波纹（Bow Wave & Wake Ripple）
+  let obstacleWave = 0;
+  const obstacles = getStreamObstacles();
+  for (let i = 0; i < obstacles.length; i++) {
+    const ob = obstacles[i];
+    const dz = z - ob.z;
+    if (dz < -0.6 || dz > 1.3) continue;
+    const dx = x - ob.x;
+    const dist = Math.hypot(dx, dz);
+    if (dist < ob.r * 2.8) {
+      const ring = Math.sin(dist * 18.0 - time * 5.2 + i) * Math.exp(-dist * 2.4);
+      // 迎水面（dz < 0）激起弓形涌波，背水面（dz > 0）拖出 V 型尾流
+      const wakeBias = dz > 0 ? 1.25 : 0.85;
+      obstacleWave += ring * 0.32 * wakeBias;
+    }
+  }
+
+  const cascadeBoost = 1 + cascadeFactorAt(z) * 0.75;
+  return (long + short + cross + obstacleWave) * params.displacementMax * cascadeBoost;
 }
 
 export function waterDisplacement(x, z, time, params = ANIM.stream) {
@@ -97,6 +128,9 @@ export function collectWaterSurfaces(roots) {
   const culvertSlabs = [];
   const eddies = [];
   const cascades = [];
+  const fluidSystems = [];
+  const splashSystems = [];
+
   for (const root of roots) {
     if (!root) continue;
     root.traverse((node) => {
@@ -114,6 +148,16 @@ export function collectWaterSurfaces(roots) {
         };
         surface.weights = vertexWeights(surface);
         surfaces.push(surface);
+      } else if (node.userData.fluidParticles) {
+        fluidSystems.push({
+          mesh: node,
+          ...node.userData.fluidParticles
+        });
+      } else if (node.userData.splashParticles) {
+        splashSystems.push({
+          mesh: node,
+          ...node.userData.splashParticles
+        });
       } else if (node.userData.eddySpin) {
         eddies.push({
           mesh: node,
@@ -133,20 +177,128 @@ export function collectWaterSurfaces(roots) {
       }
     });
   }
-  return { surfaces, culvertSlabs, eddies, cascades };
+  return { surfaces, culvertSlabs, eddies, cascades, fluidSystems, splashSystems };
+}
+
+/**
+ * 推进拉格朗日物理流体粒子与飞沫粒子
+ */
+function stepFluidParticles(fluidSystems, splashSystems, dt, time, strength) {
+  const dummy = new THREE.Object3D();
+  const pt = new THREE.Vector3();
+  const tan = new THREE.Vector3();
+  const stepDt = Math.min(0.05, Math.max(0.004, dt || 0.016)) * strength;
+
+  for (const sys of fluidSystems) {
+    const { mesh: inst, states, curve, obstacles } = sys;
+    for (let i = 0; i < states.length; i++) {
+      const st = states[i];
+      curve.getPointAt(st.u, pt);
+      curve.getTangentAt(st.u, tan);
+
+      // 瀑布陡坡处重力加速（v = v0 + g_eff * slope）
+      const casBoost = 1 + cascadeFactorAt(pt.z) * 1.65;
+      st.u += st.speed * casBoost * stepDt;
+      if (st.u >= 1) {
+        st.u -= 1;
+        st.vx = 0;
+      }
+
+      curve.getPointAt(st.u, pt);
+      curve.getTangentAt(st.u, tan);
+
+      // 横向恢复力与漩涡微扰
+      const half = Math.max(0.22, streamBankHalf(pt.z) * 0.72);
+      st.lat += st.vx * stepDt;
+      st.vx *= 0.92;
+      if (Math.abs(st.lat) > half) {
+        st.lat = Math.sign(st.lat) * half;
+        st.vx *= -0.5;
+      }
+
+      let px = pt.x + st.lat;
+      const pz = pt.z;
+
+      // 溪石与堰石真实物理碰撞反射与绕流（Obstacle Deflection & Vortex Circulation）
+      for (let j = 0; j < obstacles.length; j++) {
+        const ob = obstacles[j];
+        const dz = pz - ob.z;
+        if (Math.abs(dz) > ob.r * 2.2) continue;
+        const dx = px - ob.x;
+        const d = Math.hypot(dx, dz);
+        const minR = ob.r + 0.05;
+        if (d < minR && d > 1e-4) {
+          const nx = dx / d;
+          px = ob.x + nx * minR;
+          st.lat = px - pt.x;
+          // 赋予绕石切向涡流速度
+          st.vx += (nx >= 0 ? 1 : -1) * 0.45;
+        }
+      }
+
+      const waveH = Math.sin(time * 4.5 + st.phase) * 0.004;
+      const py = waterY(pz) + 0.005 + waveH;
+      const yaw = Math.atan2(tan.x + st.vx * 0.25, tan.z);
+      const pitch = -Math.asin(THREE.MathUtils.clamp(tan.y, -0.85, 0.85));
+
+      dummy.position.set(px, py, pz);
+      dummy.rotation.set(pitch, yaw, 0);
+      const stretch = st.scale * (1.1 + casBoost * 0.65);
+      dummy.scale.set(st.scale * 0.85, st.scale * 0.55, stretch);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+  }
+
+  for (const sys of splashSystems) {
+    const { mesh: inst, states, cascades } = sys;
+    for (let i = 0; i < states.length; i++) {
+      const st = states[i];
+      st.life += st.speed * stepDt;
+      if (st.life >= 1) st.life -= 1;
+
+      const cas = cascades[st.casIdx];
+      const u = st.life;
+      const z = cas.z + (u - 0.2) * cas.halfSpan * 1.45;
+      const x = streamCenterX(z) + st.latOffset + st.vx * u * 0.35;
+      // 抛体运动 y(u) = y_water + v0*u - 0.5*g*u^2
+      const hop = Math.sin(u * Math.PI) * 0.055;
+      const y = waterY(z) + 0.008 + hop;
+      const s = st.scale * Math.sin(u * Math.PI);
+
+      dummy.position.set(x, y, z);
+      dummy.rotation.set(u * 2.4, i * 0.7, 0);
+      dummy.scale.setScalar(Math.max(0.05, s));
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+  }
 }
 
 export function createStreamFlow(roots, options = {}) {
   const params = ANIM.stream;
   const strength = THREE.MathUtils.clamp(options.strength ?? 1, 0, 1);
-  const { surfaces, culvertSlabs, eddies, cascades } = collectWaterSurfaces(roots);
+  const { surfaces, culvertSlabs, eddies, cascades, fluidSystems, splashSystems } = collectWaterSurfaces(roots);
+  let lastTime = 0;
 
   function update({ time }) {
-    // 推进所有水体着色器的 uTime，使焦散波光、漩涡与瀑布白沫实时流动
+    const dt = Math.max(0.004, time - lastTime);
+    lastTime = time;
+
+    // 1. 推进水面与水底折射焦散着色器的时间
     for (const mat of WATER_FLOW_MATERIALS) {
       tuneMaterial(mat, 'uTime', time);
     }
+    for (const mat of RIVERBED_CAUSTIC_MATERIALS) {
+      tuneMaterial(mat, 'uCausticTime', time);
+    }
 
+    // 2. 推进拉格朗日物理流体粒子与瀑布飞沫粒子
+    stepFluidParticles(fluidSystems, splashSystems, dt, time, strength);
+
+    // 3. 推进水面网格波浪与撞石反射波纹
     for (const surface of surfaces) {
       const array = surface.attribute.array;
       const base = surface.base;
@@ -183,5 +335,5 @@ export function createStreamFlow(roots, options = {}) {
   }
 
   registerAnimation(STREAM_FLOW_NAME, update);
-  return { update, surfaces, culvertSlabs, eddies, cascades };
+  return { update, surfaces, culvertSlabs, eddies, cascades, fluidSystems, splashSystems };
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// S9.8 视觉排查：离线软件光栅化预览（支持 CanvasTexture 采样、三渲二色阶、老化与青苔注入、超采样抗锯齿）
+// S9.8 视觉排查：离线软件光栅化预览（支持 CanvasTexture 采样、三渲二色阶、水下折射焦散、光学清溪与超采样抗锯齿）
 import { installDomStub } from './dom-stub.mjs';
 installDomStub();
 
@@ -138,6 +138,36 @@ function bandSteps(material) {
   return m ? Number(m[1]) : TOON_BANDS.mid;
 }
 
+function hash21(x, y) {
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+function valueNoise(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  const a = hash21(ix, iy);
+  const b = hash21(ix + 1, iy);
+  const c = hash21(ix, iy + 1);
+  const d = hash21(ix + 1, iy + 1);
+  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
+}
+
+function fbm2(x, y) {
+  let v = 0, a = 0.5;
+  for (let i = 0; i < 3; i++) {
+    v += a * valueNoise(x, y);
+    const nx = 0.8 * x - 0.6 * y;
+    const ny = 0.6 * x + 0.8 * y;
+    x = nx * 2.02 + 13.7;
+    y = ny * 2.02 - 9.2;
+    a *= 0.5;
+  }
+  return v;
+}
+
 const stats = {
   meshes: 0, shells: 0, instanced: 0, triangles: 0, culled: 0,
   skippedShader: 0, skippedNoOutline: 0, transparentMeshes: 0, additiveMeshes: 0, points: 0
@@ -146,7 +176,7 @@ const stats = {
 const texScratch = new Float64Array(3);
 const shadeScratch = new Float64Array(4);
 
-function shadeLit(material, nx, ny, nz, u, v, wy, out) {
+function shadeLit(material, nx, ny, nz, u, v, wxWorld, wy, wzWorld, out) {
   const steps = bandSteps(material);
   const ndl = nx * toSun.x + ny * toSun.y + nz * toSun.z;
   const key = toonRamp(ndl, steps) * LIGHT.sunIntensity;
@@ -175,7 +205,6 @@ function shadeLit(material, nx, ny, nz, u, v, wy, out) {
     mb *= texScratch[2];
   }
 
-  // 叠加材质的青苔附着与次表面透光（使离线预览也能反映 shader 注入效果）
   const uniforms = material.userData && material.userData.uniforms;
   if (uniforms && uniforms.uMossColor && wy !== undefined) {
     const mh = uniforms.uMossHeight.value;
@@ -202,53 +231,70 @@ function shadeLit(material, nx, ny, nz, u, v, wy, out) {
     out[2] += srgbToLinear(tc.b) * str;
   }
 
-  // 水体焦散波光、漩涡与小瀑布白沫模拟（与 water-shader.js 保持一致，含边缘羽化 alpha）
+  // 1) 水底河床与鹅卵石实时斯涅尔折射焦散（submergedCaustics）
+  if (material.userData && material.userData.submergedCaustics && wxWorld < -1.15 && wxWorld > -6.0) {
+    const uNorm = Math.max(0, Math.min(1, (11.6 - wzWorld) / 20.8));
+    const approxWy = 0.25 + 2.95 * Math.pow(uNorm, 1.08);
+    const waterDepth = Math.max(0, Math.min(0.65, approxWy - wy + 0.14));
+    if (waterDepth > 0.01) {
+      const n1 = fbm2(wxWorld * 2.4, wzWorld * 2.1 - simSeconds * 1.8);
+      const n2 = fbm2(wxWorld * 3.8 + 4.2, wzWorld * 3.2 - simSeconds * 2.4);
+      const causticNet = Math.pow(Math.max(0, (n1 * 0.6 + n2 * 0.4) - 0.44) * 2.1, 1.8);
+      const absorb = 1 - Math.exp(-waterDepth * 2.2);
+      // 浅水透亮保留泥土/卵石原色并叠加灵动折射焦散光网，深潭微染冷翠色
+      out[0] = out[0] * (1 - absorb * 0.28) + srgbToLinear(0.46) * causticNet * 0.42;
+      out[1] = out[1] * (1 + absorb * 0.08) + srgbToLinear(0.72) * causticNet * 0.48;
+      out[2] = out[2] * (1 + absorb * 0.04) + srgbToLinear(0.60) * causticNet * 0.45;
+    }
+  }
+
+  // 2) 清澈光学水面与瀑布流管/流体粒子着色（无规则点阵，高透底，自然菲涅尔与流线水花）
   if (material.userData && material.userData.waterFlow && uniforms) {
-    const wx = u * 2.2;
-    const wz = v * 2.2;
-    const c1 = Math.pow(0.5 + 0.5 * Math.sin(wx * 5.2 + wz * 4.1 - simSeconds * 2.4) * Math.cos(wx * 4.3 - wz * 5.6 + simSeconds * 1.9), 3.0);
-    const c2 = Math.pow(0.5 + 0.5 * Math.sin(wx * 8.5 - wz * 6.2 - simSeconds * 3.1), 4.0);
-    const caustics = Math.min(1, c1 * 0.85 + c2 * 0.65);
-    const slopeTilt = Math.max(0, Math.min(1, (1 - Math.abs(ny)) * 4.8));
-    const foamNoise = 0.5 + 0.5 * Math.sin(wx * 18.0 + wz * 6.5 - simSeconds * 5.0);
-    const fineFoam = 0.5 + 0.5 * Math.cos(wx * 26.0 - wz * 14.0 - simSeconds * 6.2);
-    const cascadeFoam = slopeTilt * (0.35 + 0.65 * foamNoise);
-    const glint = Math.pow(Math.max(0, Math.sin(wx * 19.0 + wz * 11.0) * Math.cos(wx * 13.0 - wz * 23.0)), 6.0);
+    const overlayMode = uniforms.uOverlayMode ? uniforms.uOverlayMode.value : 0;
     const sc = uniforms.uShallowColor.value;
     const dc = uniforms.uDeepColor.value;
-    const str = uniforms.uFlowStrength.value;
-    const overlayMode = uniforms.uOverlayMode ? uniforms.uOverlayMode.value : 0;
-    const br = dc.r * (1 - caustics * 0.65) + sc.r * (caustics * 0.65);
-    const bg = dc.g * (1 - caustics * 0.65) + sc.g * (caustics * 0.65);
-    const bb = dc.b * (1 - caustics * 0.65) + sc.b * (caustics * 0.65);
+    const filament = fbm2(wxWorld * 3.2, wzWorld * 1.8 - simSeconds * 2.6);
+    const slopeTilt = Math.max(0, Math.min(1, (1 - Math.abs(ny)) * 4.5));
 
-    if (overlayMode > 1.5) {
+    if (overlayMode > 2.5) {
+      // 物理流体粒子 / 飞沫微粒
+      out[0] = srgbToLinear(0.48);
+      out[1] = srgbToLinear(0.64);
+      out[2] = srgbToLinear(0.58);
+      out[3] = 0.65;
+    } else if (overlayMode > 1.5) {
+      // 漩涡回流丝
       const dx = (u - 0.5) * 2;
       const dy = (v - 0.5) * 2;
       const dist = Math.hypot(dx, dy);
-      const ang = Math.atan2(dy, dx);
-      const radialOuter = Math.max(0, Math.min(1, (1.0 - dist) / 0.72));
-      const radialInner = Math.max(0, Math.min(1, (dist - 0.04) / 0.18));
-      const spiral = 0.5 + 0.5 * Math.sin(dist * 18.0 - ang * 3.0 - simSeconds * 2.4 + foamNoise * 3.2);
-      const ringMask = radialOuter * radialInner * Math.max(0, Math.min(1, (spiral * 0.65 + fineFoam * 0.35 - 0.32) / 0.52));
-      out[0] = srgbToLinear(sc.r * 0.42 + 0.42 * 0.58);
-      out[1] = srgbToLinear(sc.g * 0.42 + 0.56 * 0.58);
-      out[2] = srgbToLinear(sc.b * 0.42 + 0.50 * 0.58);
-      out[3] = ringMask;
+      const radial = Math.max(0, Math.min(1, (1.0 - dist) / 0.72)) * Math.max(0, Math.min(1, (dist - 0.06) / 0.2));
+      out[0] = srgbToLinear(0.44);
+      out[1] = srgbToLinear(0.58);
+      out[2] = srgbToLinear(0.52);
+      out[3] = radial * Math.max(0, (filament - 0.42) * 1.6);
     } else if (overlayMode > 0.5) {
-      const edgeX = Math.min(1, u / 0.22) * Math.min(1, (1 - u) / 0.22);
-      const edgeY = Math.min(1, v / 0.18) * Math.min(1, (1 - v) / 0.24);
-      const threads = Math.max(0, Math.min(1, (foamNoise * 0.62 + fineFoam * 0.38 - 0.3) / 0.52));
-      out[0] = srgbToLinear(sc.r * 0.38 + 0.44 * 0.62);
-      out[1] = srgbToLinear(sc.g * 0.38 + 0.58 * 0.62);
-      out[2] = srgbToLinear(sc.b * 0.38 + 0.52 * 0.62);
-      out[3] = Math.max(0, edgeX * edgeY * (0.22 + 0.78 * threads));
+      // CatmullRomCurve3 瀑布流管水束
+      const threads = Math.max(0, Math.min(1, (filament - 0.36) * 1.7));
+      out[0] = srgbToLinear(sc.r * 0.45 + 0.50 * 0.55);
+      out[1] = srgbToLinear(sc.g * 0.45 + 0.64 * 0.55);
+      out[2] = srgbToLinear(sc.b * 0.45 + 0.58 * 0.55);
+      out[3] = 0.28 + 0.56 * threads;
     } else {
-      const foamAmt = Math.min(0.86, cascadeFoam * 0.85);
-      out[0] = out[0] * (1 - 0.55 * str) + srgbToLinear(br) * 0.55 * str + srgbToLinear(0.42) * foamAmt + srgbToLinear(0.54) * glint * 0.42;
-      out[1] = out[1] * (1 - 0.55 * str) + srgbToLinear(bg) * 0.55 * str + srgbToLinear(0.56) * foamAmt + srgbToLinear(0.72) * glint * 0.42;
-      out[2] = out[2] * (1 - 0.55 * str) + srgbToLinear(bb) * 0.55 * str + srgbToLinear(0.50) * foamAmt + srgbToLinear(0.64) * glint * 0.42;
-      out[3] = Math.max(0.42, Math.min(1.6, 0.64 + 0.42 * caustics + 0.65 * foamAmt));
+      // 主清澈水面：极高通透度（直视水下河床卵石与折射焦散），仅叠加柔和菲涅尔林冠天光与跌水丝状白沫
+      const vx = camera.position.x - wxWorld;
+      const vy = camera.position.y - wy;
+      const vz = camera.position.z - wzWorld;
+      const vlen = Math.hypot(vx, vy, vz) || 1;
+      const ndv = Math.abs((nx * vx + ny * vy + nz * vz) / vlen);
+      const fresnel = 0.02 + 0.42 * Math.pow(1 - Math.min(1, ndv), 4.2);
+      const cascadeFoam = slopeTilt * Math.max(0, (filament - 0.45) * 1.8);
+      const wr = dc.r * 0.5 + sc.r * 0.5;
+      const wg = dc.g * 0.5 + sc.g * 0.5;
+      const wb = dc.b * 0.5 + sc.b * 0.5;
+      out[0] = srgbToLinear(wr * (1 - fresnel) + 0.20 * fresnel + 0.48 * cascadeFoam);
+      out[1] = srgbToLinear(wg * (1 - fresnel) + 0.34 * fresnel + 0.62 * cascadeFoam);
+      out[2] = srgbToLinear(wb * (1 - fresnel) + 0.27 * fresnel + 0.56 * cascadeFoam);
+      out[3] = Math.min(0.68, 0.16 + fresnel * 0.45 + cascadeFoam * 0.52);
     }
   }
 
@@ -297,7 +343,9 @@ function rasterMesh(node, id) {
   const instances = node.isInstancedMesh ? node.count : 1;
 
   const vp = new Float64Array(vCount * 3);
+  const wxArr = new Float64Array(vCount);
   const wyArr = new Float64Array(vCount);
+  const wzArr = new Float64Array(vCount);
   const wn = new Float64Array(vCount * 3);
 
   for (let inst = 0; inst < instances; inst++) {
@@ -318,7 +366,9 @@ function rasterMesh(node, id) {
       const vy = viewM[1] * x + viewM[5] * y + viewM[9] * z + viewM[13];
       const vz = viewM[2] * x + viewM[6] * y + viewM[10] * z + viewM[14];
       vp[i * 3] = vx; vp[i * 3 + 1] = vy; vp[i * 3 + 2] = vz;
+      wxArr[i] = worldM[0] * x + worldM[4] * y + worldM[8] * z + worldM[12];
       wyArr[i] = worldM[1] * x + worldM[5] * y + worldM[9] * z + worldM[13];
+      wzArr[i] = worldM[2] * x + worldM[6] * y + worldM[10] * z + worldM[14];
       if (vz < -camera.near) anyVisible = true;
       if (nrm) {
         const nx0 = nrm[i * 3], ny0 = nrm[i * 3 + 1], nz0 = nrm[i * 3 + 2];
@@ -381,7 +431,9 @@ function rasterMesh(node, id) {
 
       const mu = uvArr ? (uvArr[i0 * 2] + uvArr[i1 * 2] + uvArr[i2 * 2]) / 3 : 0.5;
       const mv = uvArr ? (uvArr[i0 * 2 + 1] + uvArr[i1 * 2 + 1] + uvArr[i2 * 2 + 1]) / 3 : 0.5;
+      const mwx = (wxArr[i0] + wxArr[i1] + wxArr[i2]) / 3;
       const mwy = (wyArr[i0] + wyArr[i1] + wyArr[i2]) / 3;
+      const mwz = (wzArr[i0] + wzArr[i1] + wzArr[i2]) / 3;
 
       const dist = (-az_ - bz - cz) / 3;
       let r, g, b, alpha;
@@ -408,9 +460,10 @@ function rasterMesh(node, id) {
         r = srgbToLinear(mr); g = srgbToLinear(mg); b = srgbToLinear(mb);
         alpha = opacity * mapMask;
       } else {
-        shadeLit(mat, wnx, wny, wnz, mu, mv, mwy, shadeScratch);
+        shadeLit(mat, wnx, wny, wnz, mu, mv, mwx, mwy, mwz, shadeScratch);
         r = shadeScratch[0]; g = shadeScratch[1]; b = shadeScratch[2];
-        alpha = mat.transparent ? Math.min(0.88, opacity * shadeScratch[3]) : 1;
+        const isWaterFlow = !!(mat.userData && mat.userData.waterFlow);
+        alpha = mat.transparent ? (isWaterFlow ? shadeScratch[3] : Math.min(0.88, opacity * shadeScratch[3])) : 1;
       }
 
       const area = (pbx - pax) * (pcy - pay) - (pby - pay) * (pcx - pax);
@@ -515,7 +568,7 @@ for (let py = 0; py < RH; py++) {
   }
 }
 
-/* ------------------------------------------------------------------ 雾 + 色调压缩 + 调色（修复 SS 降采样坐标） */
+/* ------------------------------------------------------------------ 雾 + 色调压缩 + 调色 */
 const fogK = LIGHT.fogDensity * LIGHT.fogDensity;
 const grade = POST.grade;
 const final = new Float32Array(W * H * 3);
