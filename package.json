@@ -1,0 +1,17 @@
+{
+  "name": "jp-au-station",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "日系三渲二微缩景观：深山无人小站 · 秋日午后（模块化 Three.js Toon 场景）",
+  "scripts": {
+    "serve": "python3 -m http.server ${PORT:-7979}",
+    "validate": "node tools/validate.mjs",
+    "audit": "node tools/scene-audit.mjs",
+    "audit:strict": "node tools/scene-audit.mjs --strict",
+    "smoke": "node tools/smoke.mjs"
+  },
+  "devDependencies": {
+    "three": "file:tools/mock"
+  }
+}

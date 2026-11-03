@@ -1,0 +1,9 @@
+{
+  "name": "three",
+  "version": "0.160.0-stub",
+  "private": true,
+  "description": "Local three.js stub used only by the offline Node audit tools (the browser loads real three from the CDN importmap).",
+  "type": "module",
+  "main": "three.js",
+  "exports": { ".": "./three.js" }
+}
