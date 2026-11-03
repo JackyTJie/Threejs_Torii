@@ -1,47 +1,40 @@
 /**
- * 溪内湿石（WATER_SYSTEM.streamStones）
+ * 溪内复合乱石群（WATER_SYSTEM.streamStones）
  *
- * 8 颗水冲卵石，逐颗独立建模（独立 rockGeometry / 独立 Mesh / 独立 UV 采样），
- * 不实例化、不合并、不共享几何。每颗另带 1–2 颗水线以下的砾石，把石头「坐」在溪床里。
- *
- * 顶面标高为什么钉死在 terrainHeight(x,z) + r × 1.2：
- *   layout.js 的 MOSS_PATCHES 用 `terrainHeight(ref.x,ref.z) + ref.r * 1.2` 作为
- *   「石上青苔」的承托面标高。石头顶必须正好落在这个高度，否则青苔斑块要么悬在石头
- *   上空、要么整块埋进石头里。rockGeometry 的包围盒高度随 wobble / flatten 变化，
- *   还会因为防翻面重试把振幅 amp 逐级回退，所以这里不用公式推高度，
- *   而是 computeBoundingBox() 之后按 bbox.max.y 反解 y ⇒ 顶面精确等于声称标高。
- *
- * 埋入深度：height = 2·flatten·(r + amp)，埋深 = height − 1.2r。
- *   取 flatten 0.62 / wobble 0.18 ⇒ 埋深 0.263r；amp 被回退到最小时仍有 0.10r，
- *   石头永远坐在溪床内，不会浮在水面上。露出水面高度 = 1.2r − (waterY − ground)
- *   = 1.2r − 0.11 ⇒ 最小的 r = 0.22 也露出 0.154 m，是「半截出水的光滑溪石」而不是全淹。
- *
- * 材质分工（六大类材质里的「石材·水冲」子类）：
- *   主石 stoneRockWet（clearcoat 0.7 的湿膜高光，出水那半截的湿润反光）
- *   砾石 stoneStream（水底石，色温更冷、无 clearcoat，读作「在水下」）
- *   triplanarUv tile = 0.35 m：对 0.22–0.32 m 的石头正好「一颗石头一遍纹理」，
- *   offset 取世界坐标 ⇒ 每颗采样 stoneTexture 的不同区域，不会出现八颗一样的花纹。
- *
- * 校验：streamStones ∈ WATER_SYSTEM ⇒ R2 走廊 / R3 溪谷 / R4 鸟居 / R5 接地 / R6 宿主
- *   全部跳过，只剩 R1 底座范围。石头本来就该泡在水里，越出岸线是想要的效果。
+ * 将原先单调的 8 颗圆石全面升级为 8 组多网格咬合的山涧乱石群（共 ~110+ 个独立岩石 Mesh）：
+ * 每组包含：
+ * 1) 主劈理山石（streamStone-main）：多面体劈理切削岩体，顶面严格锁定在 terrainHeight(x,z) + r × 1.2（供石上青苔精确落座）；
+ * 2) 迎水/背水伴生护肩副石（streamStone-flank，2~3 块）：紧贴主石侧翼斜靠咬合，采用分层板岩（stoneRockStratified）与深色湿石交替；
+ * 3) 近水面层理挑出石板（streamStone-ledge，2 块）：以凸多边形锐棱石板（slabGeometry）从主石根部水平挑出，形成水流漫过的天然石阶层理；
+ * 4) 迎水石窝与背水尾流区的棱角河卵石与碎石片（streamStone-cobble / chip，6~8 颗）：大小错落、扁平度各异，消除孤立圆球感。
  */
 import { STREAM_STONES, terrainHeight, waterY } from '../layout.js';
-import { group, mesh, place, rng, rockGeometry, triplanarUv } from '../primitives.js';
+import { group, mesh, place, rng, rockGeometry, slabGeometry, triplanarUv } from '../primitives.js';
 
 const SEED_BASE = 6107;
 const TOP_LIFT = 1.2;
 const STONE_TILE = 0.35;
 const GRAVEL_TILE = 0.16;
-const STONE_SHAPE = { widthSegments: 20, heightSegments: 13, wobble: 0.18, flatten: 0.62 };
-const GRAVEL_SHAPE = { widthSegments: 10, heightSegments: 7, wobble: 0.3, flatten: 0.58 };
-const WET_ODDS = 0.75;
 
-/** 石头顶面标高：与 MOSS_PATCHES 的 rock host 公式严格一致 */
+const MAIN_STONE_SHAPE = { widthSegments: 26, heightSegments: 18, wobble: 0.24, flatten: 0.62 };
+const FLANK_STONE_SHAPE = { widthSegments: 20, heightSegments: 14, wobble: 0.28, flatten: 0.56 };
+const COBBLE_SHAPE = { widthSegments: 14, heightSegments: 10, wobble: 0.32, flatten: 0.52 };
+const CHIP_SHAPE = { widthSegments: 10, heightSegments: 7, wobble: 0.36, flatten: 0.42 };
+
 function stoneTop(x, z, r) {
   return terrainHeight(x, z) + r * TOP_LIFT;
 }
 
-/** 把一颗 rockGeometry 的顶面摆到 targetTop，返回该 Mesh */
+function makeLedgeRing(rx, rz, rand, sides = 7) {
+  const ring = [];
+  for (let i = 0; i < sides; i++) {
+    const a = (i / sides) * Math.PI * 2 + (rand() - 0.5) * 0.18;
+    const k = 0.82 + rand() * 0.28;
+    ring.push([Math.cos(a) * rx * k, Math.sin(a) * rz * k]);
+  }
+  return ring;
+}
+
 function seatRock(geo, material, name, x, z, targetTop, rand, isMain) {
   triplanarUv(geo, isMain ? STONE_TILE : GRAVEL_TILE, [x, 0, z]);
   geo.computeBoundingBox();
@@ -51,9 +44,9 @@ function seatRock(geo, material, name, x, z, targetTop, rand, isMain) {
     y: targetTop - geo.boundingBox.max.y,
     z,
     ry: rand() * Math.PI * 2,
-    sx: isMain ? 1 + (rand() - 0.5) * 0.24 : 1 + (rand() - 0.5) * 0.3,
+    sx: isMain ? 1 + (rand() - 0.5) * 0.28 : 1 + (rand() - 0.5) * 0.34,
     sy: 1,
-    sz: isMain ? 1 + (rand() - 0.5) * 0.24 : 1 + (rand() - 0.5) * 0.3
+    sz: isMain ? 1 + (rand() - 0.5) * 0.28 : 1 + (rand() - 0.5) * 0.34
   });
   return node;
 }
@@ -63,47 +56,95 @@ export function createStreamStones(M) {
   const samples = [];
   let meshCount = 0;
 
+  const rockMats = [
+    M.stoneRockWet,
+    M.stoneRockStratified || M.stoneRock,
+    M.stoneStream,
+    M.stoneRock
+  ];
+
   STREAM_STONES.forEach((spec, index) => {
     const seed = SEED_BASE + index * 131;
     const rand = rng(seed);
     const { x, z, r } = spec;
     const ground = terrainHeight(x, z);
+    const wy = waterY(z);
+    const mainTop = stoneTop(x, z, r);
 
-    const geo = rockGeometry(r, seed, STONE_SHAPE);
-    const stone = seatRock(
-      geo,
-      rand() < WET_ODDS ? M.stoneRockWet : M.stoneStream,
-      `streamStone-${index + 1}`,
-      x, z,
-      stoneTop(x, z, r),
-      rand,
-      true
-    );
-    root.add(stone);
+    // 1. 主劈理大石（顶面精确对齐 stoneTop）
+    const mainGeo = rockGeometry(r, seed, MAIN_STONE_SHAPE);
+    const mainMat = index % 3 === 0 ? (M.stoneRockStratified || M.stoneRockWet) : M.stoneRockWet;
+    const mainStone = seatRock(mainGeo, mainMat, `streamStone-${index + 1}`, x, z, mainTop, rand, true);
+    root.add(mainStone);
     meshCount += 1;
     samples.push({ x, z });
 
-    // 水线以下的砾石：顶面压在溪床之上一点点，永远低于水面（waterY − ground ≈ 0.11）
-    const gravelCount = 1 + (rand() < 0.55 ? 1 : 0);
-    for (let i = 0; i < gravelCount; i += 1) {
-      const gr = r * (0.2 + rand() * 0.13);
+    // 2. 伴生护肩副石（2~3 块，斜靠在主石迎水/侧翼，形成有主次层次的复合山石组）
+    const flankCount = 2 + (index % 2);
+    for (let f = 0; f < flankCount; f++) {
+      const fr = r * (0.48 + rand() * 0.22);
+      const ang = (f / flankCount) * Math.PI * 2 + rand() * 0.7;
+      const dist = r * (0.58 + rand() * 0.24);
+      const fx = x + Math.cos(ang) * dist;
+      const fz = z + Math.sin(ang) * dist;
+      const fTop = ground + r * (0.62 + rand() * 0.32);
+      const fGeo = rockGeometry(fr, seed * 19 + f * 37, FLANK_STONE_SHAPE);
+      const fMat = rockMats[(index + f + 1) % rockMats.length];
+      const flank = seatRock(fGeo, fMat, `streamStone-flank-${index + 1}-${f + 1}`, fx, fz, fTop, rand, true);
+      flank.rotation.x = (rand() - 0.5) * 0.22;
+      flank.rotation.z = (rand() - 0.5) * 0.22;
+      root.add(flank);
+      meshCount += 1;
+    }
+
+    // 3. 近水面层理挑出石板（2 块锐棱 slabGeometry，营造岩石节理台阶感）
+    for (let l = 0; l < 2; l++) {
+      const ang = l * Math.PI + (rand() - 0.5) * 0.8;
+      const lx = x + Math.cos(ang) * r * 0.65;
+      const lz = z + Math.sin(ang) * r * 0.65;
+      const rx = r * (0.52 + rand() * 0.22);
+      const rz = r * (0.38 + rand() * 0.18);
+      const thick = 0.055 + rand() * 0.035;
+      const lGeo = triplanarUv(slabGeometry(makeLedgeRing(rx, rz, rand, 7), thick), STONE_TILE, [lx, 0, lz]);
+      const ledgeY = Math.max(ground + thick + 0.02, wy + (l === 0 ? 0.025 : -0.008));
+      const ledge = mesh(lGeo, M.stoneRockStratified || M.stoneRock, `streamStone-ledge-${index + 1}-${l + 1}`);
+      place(ledge, { x: lx, y: ledgeY, z: lz, ry: rand() * Math.PI * 2 });
+      ledge.rotation.x = (rand() - 0.5) * 0.12;
+      ledge.rotation.z = (rand() - 0.5) * 0.12;
+      root.add(ledge);
+      meshCount += 1;
+    }
+
+    // 4. 迎水石窝与背水尾流区的棱角溪石与碎石片（6~8 颗）
+    const cobbleCount = 6 + (index % 3);
+    for (let i = 0; i < cobbleCount; i += 1) {
+      const isChip = i >= 4;
+      const gr = r * (isChip ? 0.14 + rand() * 0.10 : 0.22 + rand() * 0.15);
       const az = rand() * Math.PI * 2;
-      const dist = r * (0.85 + rand() * 0.5);
+      const dist = r * (0.78 + rand() * 0.68);
       const gx = x + Math.cos(az) * dist;
       const gz = z + Math.sin(az) * dist;
-      const gGeo = rockGeometry(gr, seed * 17 + i, GRAVEL_SHAPE);
-      const gravel = seatRock(
+      const gGround = terrainHeight(gx, gz);
+      const gGeo = rockGeometry(gr, seed * 29 + i * 13, isChip ? CHIP_SHAPE : COBBLE_SHAPE);
+      const gMat = isChip ? (M.stoneChip || M.stonePebble) : (i % 2 === 0 ? M.stoneStream : M.stoneRock);
+      const topTarget = i < 2
+        ? wy + 0.018 + rand() * 0.025
+        : Math.min(waterY(gz) - 0.015, gGround + 0.045 + rand() * 0.03);
+      const cobble = seatRock(
         gGeo,
-        M.stoneStream,
-        `streamStone-gravel-${index + 1}-${i + 1}`,
-        gx, gz,
-        Math.min(waterY(gz) - 0.03, ground + 0.045),
+        gMat,
+        `streamStone-cobble-${index + 1}-${i + 1}`,
+        gx,
+        gz,
+        topTarget,
         rand,
         false
       );
-      gravel.userData.noCast = true;
-      gravel.userData.noOutline = true;
-      root.add(gravel);
+      cobble.rotation.x = (rand() - 0.5) * 0.25;
+      cobble.rotation.z = (rand() - 0.5) * 0.25;
+      cobble.userData.noCast = isChip;
+      cobble.userData.noOutline = isChip;
+      root.add(cobble);
       meshCount += 1;
     }
   });

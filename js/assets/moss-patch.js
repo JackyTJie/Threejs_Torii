@@ -77,18 +77,18 @@ const FILM_EMBED = 0.006;
 
 /** 苔片嵌入宿主的深度（米）；石块宿主按尺寸加大，见文件头 */
 const SINK_BY_HOST = { step: 0.01, ground: 0.014 };
-const ROCK_SINK_BASE = 0.012;
-const ROCK_SINK_GAIN = 0.1;
-const ROCK_FLAKE_MAX = 0.14;
+const ROCK_SINK_BASE = 0.014;
+const ROCK_SINK_GAIN = 0.12;
+const ROCK_FLAKE_MAX = 0.068;
 
-/** 苔片半径 / 群落半径 */
-const FLAKE_RADIUS = { step: [0.22, 0.36], rock: [0.22, 0.34], ground: [0.3, 0.52] };
-const LUMP_RADIUS = [0.14, 0.26];
+/** 苔片半径 / 群落半径（石块宿主的青苔控制在石缝局部，绝不铺成大绿盖子把石头包成翡翠球） */
+const FLAKE_RADIUS = { step: [0.22, 0.36], rock: [0.12, 0.22], ground: [0.3, 0.52] };
+const LUMP_RADIUS = [0.11, 0.20];
 const PEBBLE_RADIUS = [0.07, 0.13];
 
 const MIX = {
   step: { flakes: [5, 8], films: [2, 3], lumps: [1, 2], pebbles: [2, 3] },
-  rock: { flakes: [4, 7], films: [0, 0], lumps: [1, 2], pebbles: [2, 3] },
+  rock: { flakes: [2, 3], films: [0, 0], lumps: [1, 1], pebbles: [3, 5] },
   ground: { flakes: [6, 9], films: [1, 2], lumps: [2, 3], pebbles: [3, 4] }
 };
 
@@ -248,9 +248,12 @@ function buildColony(root, p, index, M) {
     const rp = p.r * (PEBBLE_RADIUS[0] + rand() * (PEBBLE_RADIUS[1] - PEBBLE_RADIUS[0]));
     const { dx, dz } = spot(rand, p.r * 0.85);
     const geo = rockGeometry(rp, seed * 53 + i, PEBBLE_SHAPE);
+    const pebbleMat = p.host === 'rock'
+      ? (i % 2 === 0 ? (M.stoneChip || M.mossStone) : (M.stoneRockStratified || M.mossStone))
+      : M.mossStone;
     const pebble = seatPart(
       geo,
-      M.mossStone,
+      pebbleMat,
       nameOf('pebble', i),
       host,
       {

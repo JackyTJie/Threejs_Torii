@@ -118,11 +118,6 @@ function stem(name, { color, seed, planks = 6, wear = 0.3 }) {
   return material;
 }
 
-/**
- * 澄澈无贴图光学水体材质：
- * 移除 roughnessMap 噪点贴图与 MeshPhysicalMaterial.transmission 内部低分抖动模糊（消除白色点阵与塑料感），
- * 完全依靠自定义物理菲涅尔透射与水底真实斯涅尔折射焦散呈现「清可见底、澄澈透亮」的山间清溪质感。
- */
 function water(name, {
   color, opacity, roughness = 0.12, clearcoat = 0.18, clearcoatRoughness = 0.16,
   envMapIntensity = 0.08, depthWrite = false, flow
@@ -248,7 +243,7 @@ function makeToriiMaterials({ seed = 23, baseY = 0, shade = 1.0 } = {}) {
     color: PALETTE.moss,
     height: baseY + 0.2,
     band: 0.7,
-    amount: 0.6
+    amount: 0.45
   });
   return T;
 }
@@ -264,7 +259,7 @@ export function createMaterialLibrary() {
   M.padEdge = named(toon({ color: PALETTE.padEdge, band: 'soft' }), 'padEdge');
   M.padChamfer = named(toon({ color: PALETTE.padHighlight, band: 'soft' }), 'padChamfer');
 
-  /* ---------------- 泥土（溪床泥沙注入实时折射焦散与水深比尔消光） ---------------- */
+  /* ---------------- 泥土 ---------------- */
   M.soilTerrain = named(toon({
     color: 0xffffff, band: 'soft',
     map: soilTexture({ size: 2048, seed: 101 })
@@ -296,58 +291,101 @@ export function createMaterialLibrary() {
     map: soilTexture({ size: 1024, base: PALETTE.soilDark, seed: 139 })
   }), 'soilCut');
 
-  /* ---------------- 石材（水中卵石与溪石同步注入水下折射焦散） ---------------- */
+  /* ---------------- 石材（三渲二哑光/微润天然山石材质，彻底消除翡翠玻璃反光与假绿染） ---------------- */
   M.stoneStepLower = stoneStepZone('stoneStepLower', {
-    seed: 13, mossHeight: 1.75, mossAmount: 0.42, wearStart: 0.16, wearBand: 1.6
+    seed: 13, mossHeight: 1.75, mossAmount: 0.36, wearStart: 0.16, wearBand: 1.6
   });
   M.stoneStepMid = stoneStepZone('stoneStepMid', {
-    seed: 17, mossHeight: 3.35, mossAmount: 0.35, wearStart: 1.75, wearBand: 1.6
+    seed: 17, mossHeight: 3.35, mossAmount: 0.30, wearStart: 1.75, wearBand: 1.6
   });
   M.stoneStepUpper = stoneStepZone('stoneStepUpper', {
-    seed: 19, mossHeight: 5.0, mossAmount: 0.28, wearStart: 3.35, wearBand: 1.6
+    seed: 19, mossHeight: 5.0, mossAmount: 0.24, wearStart: 3.35, wearBand: 1.6
   });
   M.stoneSlab = stoneStepZone('stoneSlab', {
-    seed: 23, mossHeight: 5.6, mossAmount: 0.38, wearStart: 4.4, wearBand: 1.8
+    seed: 23, mossHeight: 5.6, mossAmount: 0.32, wearStart: 4.4, wearBand: 1.8
   });
-  M.stoneStepWet = named(physical({
-    color: PALETTE.stoneWet, roughness: 0.28, metalness: 0,
-    clearcoat: 0.65, clearcoatRoughness: 0.22
+  M.stoneStepWet = named(toon({
+    color: 0xffffff, band: 'mid',
+    map: stoneTexture({
+      size: 512, base: PALETTE.stoneWet, dark: PALETTE.slateDark,
+      light: PALETTE.slate, seed: 25
+    })
   }), 'stoneStepWet');
+  applyWeathering(M.stoneStepWet, {
+    wear: PALETTE.slateDark, dust: PALETTE.soilWet, start: 0, band: 1.2,
+    wearAmount: 0.45, dustAmount: 0.2
+  });
+  applyShadowLift(M.stoneStepWet, { lift: 0.08, knee: 0.38 });
+
+  // 干/微润山石（冷灰安山岩，棱角分明，仅根部极轻微暗苔）
   M.stoneRock = named(toon({
     color: 0xffffff, band: 'mid',
     map: stoneTexture({
-      size: 512, base: PALETTE.stone, dark: PALETTE.stoneDark,
-      light: PALETTE.stoneLight, seed: 29
+      size: 512, base: 0x586166, dark: 0x32383c,
+      light: 0x737e84, seed: 29
     })
   }), 'stoneRock');
   applyWeathering(M.stoneRock, {
-    wear: PALETTE.stoneDark, dust: PALETTE.soilWet, start: 0, band: 0.9,
-    wearAmount: 0.4, dustAmount: 0.18
+    wear: 0x282d30, dust: PALETTE.soilWet, start: 0, band: 0.9,
+    wearAmount: 0.46, dustAmount: 0.20
   });
-  applyMossAttachment(M.stoneRock, { color: PALETTE.moss, height: 1.4, band: 1.1, amount: 0.45 });
-  applySubmergedCaustics(M.stoneRock);
-  M.stoneRockWet = named(physical({
-    color: 0xffffff, roughness: 0.24, metalness: 0,
-    clearcoat: 0.68, clearcoatRoughness: 0.2,
-    envMapIntensity: 0.22,
+  applyMossAttachment(M.stoneRock, { color: 0x2c3e24, height: 0.45, band: 0.65, amount: 0.14 });
+  applyShadowLift(M.stoneRock, { lift: 0.08, knee: 0.38 });
+
+  // 溪畔与雨淋深色湿石（三渲二哑光深青灰板岩，无 clearcoat 镜面高光，绝不发绿像翡翠）
+  M.stoneRockWet = named(toon({
+    color: 0xffffff, band: 'mid',
     map: stoneTexture({
-      size: 512, base: PALETTE.slate, dark: PALETTE.slateDark,
-      light: PALETTE.slateLight, seed: 31
+      size: 512, base: 0x424a4e, dark: 0x24292c,
+      light: 0x5a6469, seed: 31
     })
   }), 'stoneRockWet');
-  applyMossAttachment(M.stoneRockWet, { color: PALETTE.moss, height: 1.2, band: 0.9, amount: 0.42 });
-  applySubmergedCaustics(M.stoneRockWet);
-  M.stoneStream = named(physical({
-    color: 0xffffff, roughness: 0.32, metalness: 0,
-    clearcoat: 0.52, clearcoatRoughness: 0.26,
-    envMapIntensity: 0.2,
+  applyWeathering(M.stoneRockWet, {
+    wear: 0x1e2326, dust: PALETTE.soilWet, start: 0, band: 0.85,
+    wearAmount: 0.50, dustAmount: 0.22
+  });
+  applyMossAttachment(M.stoneRockWet, { color: 0x263820, height: 0.38, band: 0.55, amount: 0.12 });
+  applyShadowLift(M.stoneRockWet, { lift: 0.08, knee: 0.38 });
+
+  // 溪内与水下乱石（冷灰褐河石，仅在水线以下受微弱水底焦散，出水部分保持自然灰石本色）
+  M.stoneStream = named(toon({
+    color: 0xffffff, band: 'mid',
     map: stoneTexture({
-      size: 512, base: PALETTE.stone, dark: PALETTE.stoneDark,
-      light: PALETTE.stoneLight, seed: 37
+      size: 512, base: 0x4a5154, dark: 0x2a2f32,
+      light: 0x626b70, seed: 37
     })
   }), 'stoneStream');
-  applyMossAttachment(M.stoneStream, { color: PALETTE.mossWet, height: 1.5, band: 1.1, amount: 0.48 });
+  applyWeathering(M.stoneStream, {
+    wear: 0x222629, dust: PALETTE.soilWet, start: 0, band: 0.8,
+    wearAmount: 0.44, dustAmount: 0.18
+  });
+  applyShadowLift(M.stoneStream, { lift: 0.08, knee: 0.38 });
   applySubmergedCaustics(M.stoneStream);
+
+  // 层理劈理岩（用于伴生副石、挑出石板与石堰叠石，丰富石群色差）
+  M.stoneRockStratified = named(toon({
+    color: 0xffffff, band: 'hard',
+    map: stoneTexture({
+      size: 512, base: 0x4e5559, dark: 0x2b3033,
+      light: 0x687177, seed: 43
+    })
+  }), 'stoneRockStratified');
+  applyWeathering(M.stoneRockStratified, {
+    wear: 0x23272a, dust: PALETTE.soilWet, start: 0, band: 0.9,
+    wearAmount: 0.48, dustAmount: 0.20
+  });
+  applyShadowLift(M.stoneRockStratified, { lift: 0.08, knee: 0.38 });
+
+  // 棱角碎石片（Scree Chips）
+  M.stoneChip = named(toon({
+    color: 0xffffff, band: 'hard',
+    map: stoneTexture({
+      size: 512, base: 0x5d6569, dark: 0x363c3f,
+      light: 0x778187, seed: 51
+    })
+  }), 'stoneChip');
+  applyShadowLift(M.stoneChip, { lift: 0.08, knee: 0.38 });
+
   M.stonePebble = named(toon({
     color: 0xffffff, band: 'mid',
     map: gravelTexture({
@@ -482,9 +520,8 @@ export function createMaterialLibrary() {
     map: mossTexture({ size: 512, base: PALETTE.moss, wet: PALETTE.mossDamp, seed: 83 })
   }), 'mossStone');
   applyMossAttachment(M.mossStone, { color: PALETTE.mossWet, height: 2.2, band: 1.2, amount: 0.4 });
-  applySubmergedCaustics(M.mossStone);
 
-  /* ---------------- 水体（无贴图、极度清澈透底 + 水底折射焦散 + 物理流体粒子） ---------------- */
+  /* ---------------- 水体 ---------------- */
   M.waterSurface = water('waterSurface', {
     color: PALETTE.water,
     opacity: 0.24,
@@ -511,15 +548,6 @@ export function createMaterialLibrary() {
     clearcoat: 0.1,
     clearcoatRoughness: 0.22,
     flow: { speed: 0.22, scale: 1.0, strength: 1.0, overlayMode: 2 }
-  });
-  M.waterParticle = water('waterParticleFoam', {
-    color: 0x709e8e,
-    opacity: 0.48,
-    envMapIntensity: 0.05,
-    roughness: 0.2,
-    clearcoat: 0.1,
-    clearcoatRoughness: 0.2,
-    flow: { speed: 0.28, scale: 1.0, strength: 1.0, overlayMode: 3 }
   });
   M.puddleWater = water('puddleWater', {
     color: PALETTE.waterShallow,

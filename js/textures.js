@@ -132,7 +132,6 @@ export function skyCanvas(size = 1024) {
       const sx = Math.cos(theta) * 2.2 + 4.0;
       const sz = Math.sin(theta) * 2.2 + 4.0;
 
-      // 底层：林冠上方柔和阴天薄雾天光（使高处树冠叶隙保留温润的雨后天光）
       const skyT = clamp01(v / 0.46);
       let r = mix(zenith.r, mist.r, skyT);
       let g = mix(zenith.g, mist.g, skyT);
@@ -143,7 +142,6 @@ export function skyCanvas(size = 1024) {
       g += canopyGlow * 28;
       b += canopyGlow * 20;
 
-      // 第一重远山：连绵幽深的远方杉林群山（自 v > 0.28 起伏，封住中低空空白）
       const mtn1 = 0.28
         + 0.05 * Math.sin(theta * 3.0 + 0.8)
         + 0.035 * Math.cos(theta * 5.0 - 0.4)
@@ -161,14 +159,12 @@ export function skyCanvas(size = 1024) {
         b = mix(b, mb, edgeBlend);
       }
 
-      // 山腰漂浮的林间云雾带
       const mistBandY = 0.36 + 0.025 * Math.sin(theta * 2.0 + 1.2);
       const mistMask = Math.exp(-Math.pow((v - mistBandY) / 0.042, 2)) * clamp01(fbm(u * 12, v * 24, 4, 151) * 1.35 - 0.18);
       r = mix(r, valleyFog.r + 18, mistMask * 0.6);
       g = mix(g, valleyFog.g + 22, mistMask * 0.6);
       b = mix(b, valleyFog.b + 18, mistMask * 0.6);
 
-      // 第二重中景深林山脊（覆盖 v > 0.35）
       const mtn2 = 0.35
         + 0.045 * Math.cos(theta * 4.0 + 1.5)
         + 0.03 * Math.sin(theta * 7.0 - 0.9)
@@ -186,7 +182,6 @@ export function skyCanvas(size = 1024) {
         b = mix(b, mb, edgeBlend);
       }
 
-      // 第三重近景幽深密林山体（覆盖 v > 0.42 直至地平线以下）
       const mtn3 = 0.42
         + 0.035 * Math.sin(theta * 5.0 + 2.4)
         + 0.05 * (fbm(sx * 2.8, sz * 2.8, 4, 83) - 0.5);
@@ -351,19 +346,41 @@ export function gravelTexture({ size = 1024, stone = 0x8b8578, dust = 0xa39a8a, 
 export function stoneTexture({ size = 512, base = 0x8d8b84, dark = 0x6c6a64, light = 0xa8a69d, seed = 13 } = {}) {
   return cached(`stone-${size}-${base}-${seed}`, () => {
     const canvas = makeCanvas(size);
+    const cBase = rgbOf(base);
     const cDark = rgbOf(dark);
     const cLight = rgbOf(light);
     fillPixels(canvas, (x, y, w, h) => {
       const u = x / w;
       const v = y / h;
-      const n = fbm(u * 10, v * 10, 5, seed);
-      const vein = Math.abs(Math.sin((u + v) * 14 + n * 5));
-      const t = clamp01(n * 0.7 + (1 - vein) * 0.3);
-      const r = mix(cDark.r, cLight.r, t);
-      const g = mix(cDark.g, cLight.g, t);
-      const b = mix(cDark.b, cLight.b, t);
-      const speck = hash2(Math.floor(u * 220), Math.floor(v * 220), seed + 5) > 0.965 ? 14 : 0;
-      return [clampByte(r + speck), clampByte(g + speck), clampByte(b + speck)];
+      // 1. 大尺度岩面明暗块面与层理走向（模拟安山岩/板岩劈理层）
+      const macro = fbm(u * 6.5, v * 6.5, 4, seed);
+      const strata = Math.sin(v * 22 + u * 5 + fbm(u * 8, v * 8, 3, seed + 17) * 5.2) * 0.5 + 0.5;
+      // 2. 锐利岩石节理裂隙（深色石缝）
+      const crackWave1 = Math.abs(Math.sin((u * 11 + v * 7) + fbm(u * 14, v * 14, 4, seed + 31) * 4.2));
+      const crackWave2 = Math.abs(Math.sin((u * 6 - v * 13) + fbm(u * 18, v * 18, 3, seed + 47) * 3.6));
+      const fissure = Math.max(Math.pow(1 - crackWave1, 8), Math.pow(1 - crackWave2, 10) * 0.75);
+      // 3. 细密矿物结晶颗粒与风化麻点
+      const grain = fbm(u * 48, v * 48, 3, seed + 63);
+      const micro = valueNoise(u * 140, v * 140, seed + 89);
+
+      const tone = clamp01(macro * 0.48 + strata * 0.24 + grain * 0.28);
+      let r = mix(cDark.r, cBase.r, clamp01(tone * 1.4));
+      let g = mix(cDark.g, cBase.g, clamp01(tone * 1.4));
+      let b = mix(cDark.b, cBase.b, clamp01(tone * 1.4));
+
+      const hi = Math.max(0, tone - 0.56) * 1.85;
+      r = mix(r, cLight.r, hi);
+      g = mix(g, cLight.g, hi);
+      b = mix(b, cLight.b, hi);
+
+      // 压暗节理裂纹
+      r = mix(r, cDark.r * 0.62, fissure * 0.85);
+      g = mix(g, cDark.g * 0.62, fissure * 0.85);
+      b = mix(b, cDark.b * 0.62, fissure * 0.85);
+
+      // 长石/石英微晶斑点与暗色角闪石斑点
+      const grit = (micro - 0.5) * 18;
+      return [clampByte(r + grit), clampByte(g + grit), clampByte(b + grit)];
     });
     return toTexture(canvas, { repeat: 1 });
   });

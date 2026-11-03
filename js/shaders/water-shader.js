@@ -260,8 +260,9 @@ export const RIVERBED_CAUSTICS_FRAG = /* glsl */ `
 
     float u = clamp( ( 11.6 - worldPos.z ) / 20.8, 0.0, 1.0 );
     float approxWy = 0.25 + 2.95 * pow( u, 1.08 );
-    float waterDepth = clamp( approxWy - worldPos.y + 0.14, 0.0, 0.65 );
-    float submergeMask = smoothstep( 0.0, 0.06, waterDepth ) * streamMask;
+    // 严格仅对水面以下的河床与浸水石根生效（出水石面 waterDepth <= 0 绝不染色）
+    float waterDepth = clamp( approxWy - worldPos.y, 0.0, 0.65 );
+    float submergeMask = smoothstep( 0.005, 0.045, waterDepth ) * streamMask;
     if ( submergeMask <= 0.001 ) return bedColor;
 
     float eps = 0.055;
@@ -282,23 +283,23 @@ export const RIVERBED_CAUSTICS_FRAG = /* glsl */ `
 
     float oldArea = length( dFdx( oldPos ) ) * length( dFdy( oldPos ) );
     float newArea = max( 1e-7, length( dFdx( newPos ) ) * length( dFdy( newPos ) ) );
-    float areaRatio = clamp( oldArea / newArea, 0.4, 2.6 );
+    float areaRatio = clamp( oldArea / newArea, 0.4, 2.4 );
 
     float laplacian = ( hR + hL + hU + hD - 4.0 * hC ) / ( eps * eps );
     float focusDepth = clamp( waterDepth * 1.8, 0.08, 0.55 );
-    float curvatureFocus = clamp( 1.0 - laplacian * focusDepth * 0.42, 0.25, 2.8 );
+    float curvatureFocus = clamp( 1.0 - laplacian * focusDepth * 0.42, 0.25, 2.6 );
 
-    float causticNet = pow( max( 0.0, ( areaRatio * 0.45 + curvatureFocus * 0.55 ) - 0.74 ), 1.65 );
+    float causticNet = pow( max( 0.0, ( areaRatio * 0.45 + curvatureFocus * 0.55 ) - 0.78 ), 1.75 );
     float net2 = bedNoise( newPos.xz * 4.8 + vec2( 0.0, -uCausticTime * 1.6 ) );
-    causticNet = clamp( causticNet * 0.74 + smoothstep( 0.62, 0.88, net2 ) * 0.42, 0.0, 1.38 );
+    causticNet = clamp( causticNet * 0.68 + smoothstep( 0.65, 0.90, net2 ) * 0.35, 0.0, 1.15 );
 
-    float absorb = 1.0 - exp( -waterDepth * 2.3 );
-    vec3 tintedBed = mix( bedColor * 1.10, bedColor * uWaterAbsorbShallow * 1.48, absorb * 0.60 );
-    tintedBed = mix( tintedBed, uWaterAbsorbDeep * 0.68, absorb * absorb * 0.36 );
+    // 保留水底泥沙与灰石的自然本色，仅做轻微深水消光与柔和天光焦散（不把石头染成翠绿色）
+    float absorb = 1.0 - exp( -waterDepth * 2.0 );
+    vec3 tintedBed = mix( bedColor, bedColor * vec3( 0.78, 0.84, 0.82 ), absorb * 0.38 );
 
     float upFacing = clamp( dot( normalize( normal ), vec3( 0.0, 1.0, 0.0 ) ) * 0.7 + 0.3, 0.0, 1.0 );
-    vec3 causticLight = vec3( 0.48, 0.74, 0.62 ) * causticNet * upFacing * ( 1.0 - absorb * 0.32 );
+    vec3 causticLight = vec3( 0.48, 0.58, 0.54 ) * causticNet * upFacing * ( 1.0 - absorb * 0.35 );
 
-    return mix( bedColor, tintedBed + causticLight * 0.54, submergeMask );
+    return mix( bedColor, tintedBed + causticLight * 0.38, submergeMask );
   }
 `;

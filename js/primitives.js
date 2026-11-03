@@ -549,17 +549,61 @@ export function terrainPatchGeometry({ x0, x1, z0, z1, cols, rows, heightFn }) {
   return geo;
 }
 
-/** 噪声扰动岩石（保留完整三角，不减面） */
-/** 按 fbm 位移 + 纵向压扁造一块岩石；amp 为径向位移振幅（米） */
+/** 按多向岩层劈理切面（Planar Cleavage Facets）+ 层理台地 + fbm 块面位移造一块棱角分明的自然山石 */
 function buildRock(radius, seed, { widthSegments, heightSegments, flatten, amp }) {
   const geo = new THREE.SphereGeometry(radius, widthSegments, heightSegments);
   const pos = geo.getAttribute('position');
   const v = new THREE.Vector3();
+  const isStone = flatten >= 0.32;
+  const rGen = rng((seed | 0) * 97 + 13);
+
+  // 为每块山石生成 6 个确定性的劈理切面法向，把球面切削为多面体山石块面
+  const planes = [];
+  if (isStone) {
+    for (let p = 0; p < 6; p++) {
+      const theta = rGen() * Math.PI * 2;
+      const ny = (rGen() - 0.35) * 0.85;
+      const rHoriz = Math.sqrt(Math.max(0.05, 1 - ny * ny));
+      planes.push({
+        x: Math.cos(theta) * rHoriz,
+        y: ny,
+        z: Math.sin(theta) * rHoriz,
+        thresh: 0.46 + rGen() * 0.14,
+        cut: 0.18 + rGen() * 0.12
+      });
+    }
+  }
+
+  const ratio = amp / Math.max(1e-4, radius);
   for (let i = 0; i < pos.count; i++) {
     v.set(pos.getX(i), pos.getY(i), pos.getZ(i));
     const dir = v.clone().normalize();
-    const n = fbm3(dir.x * 2.4 + seed, dir.y * 2.4, dir.z * 2.4, 4);
-    const k = 1 + (n - 0.5) * 2 * (amp / radius);
+    const nMacro = fbm3(dir.x * 2.4 + seed, dir.y * 2.4, dir.z * 2.4, 4);
+
+    let k = 1 + (nMacro - 0.5) * 2 * ratio;
+
+    if (isStone) {
+      // 1. 多面体劈理切削：沿 6 个随机岩面方向削平球腹，形成折角分明的岩石块面
+      let cleave = 0;
+      for (let p = 0; p < planes.length; p++) {
+        const pl = planes[p];
+        const dot = dir.x * pl.x + dir.y * pl.y + dir.z * pl.z;
+        if (dot > pl.thresh) {
+          const t = (dot - pl.thresh) / (1 - pl.thresh);
+          cleave = Math.max(cleave, pl.cut * Math.pow(t, 1.25));
+        }
+      }
+      // 2. 水平沉积/节理层阶与棱线锐化
+      const nCrag = fbm3(dir.x * 4.8 + seed * 1.7, dir.y * 5.2, dir.z * 4.8 - seed * 0.9, 3);
+      const strata = Math.sin(dir.y * 8.5 + nMacro * 3.2) * 0.035;
+      const ridgeCrease = (0.5 - Math.abs(nCrag - 0.5)) * 0.12;
+      // 3. 顶部台面微削平（告别圆馒头顶，形成自然山石平台）
+      const crownFlat = dir.y > 0.42 ? (dir.y - 0.42) * 0.18 : 0;
+
+      const stoneShape = 1 - (cleave + crownFlat - strata - ridgeCrease) * Math.min(1, ratio * 3.8);
+      k *= stoneShape;
+    }
+
     v.multiplyScalar(k);
     v.y *= flatten;
     pos.setXYZ(i, v.x, v.y, v.z);
@@ -615,11 +659,7 @@ function foldedTriangleCount(geo) {
 }
 
 /**
- * 岩石 / 苔块 / 碎石几何（球面 + fbm 位移 + 纵向压扁），返回未加 Mesh 的几何体。
- *
- * 振幅自动收敛：径向位移一旦接近相邻顶点的纵向间距，曲面就会翻折出自交三角——薄壳尤其
- * 明显（压扁到 5% 的苔衣在 wobble 0.34 下有 7 个折叠三角）。这里从 wobble 起建，出现折叠
- * 就按 0.72 缩小振幅重建，直到没有折叠；最终振幅记在 userData.rockAmp 便于核对造型意图。
+ * 岩石 / 苔块 / 碎石几何（球面 + 劈理切面 + fbm 位移 + 纵向压扁），返回未加 Mesh 的几何体。
  */
 export function rockGeometry(radius, seed, { widthSegments = 18, heightSegments = 12, wobble = 0.22, flatten = 0.78, detail = 0 } = {}) {
   void detail;

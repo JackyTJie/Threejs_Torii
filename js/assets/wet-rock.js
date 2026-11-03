@@ -1,58 +1,55 @@
 /**
- * 散落湿石块（PATH_SYSTEM.wetRock）
+ * 散落山石露头（PATH_SYSTEM.wetRock）
  *
- * 16 颗独立建模的石块，分布在溪岸（6）、参道两侧泥地（6）、右侧坡地（4）。
- * 每颗独立 rockGeometry / 独立 Mesh / 独立 UV 采样，另带 1–2 颗碎石（独立小几何）。
- *
- * 与 stream-stones.js 共用同一套「顶面反解」配方：顶面 = terrainHeight(x,z) + r × 1.2，
- * 因为 layout.js 的 MOSS_PATCHES 里 6 处「石上青苔」的承托面就是按这个公式算的
- * （wetRock index 0–5）。石头顶不精确对齐 ⇒ 青苔悬空或埋进石头里。
- *
- * 形状参数与溪石不同：陆地石块要「钝」而不是「圆」，所以 wobble 0.26 / flatten 0.635，
- * 埋深 = 2·flatten·(1+wobble)·r − 1.2r = 0.40r（amp 回退到最小时 0.11r）。
- * flatten 0.635 是把埋深压下来的关键：用默认 flatten 0.78 会埋进 1.02r，
- * 最大的 r = 0.36 会往下陷 0.37 m，石块只剩一个帽顶，比例就崩了。
- *
- * 材质：溪岸 / 参道两侧用 stoneRockWet（clearcoat 0.7 湿膜高光）为主，
- * 坡地以 stoneRock（带 applyWeathering + applyMossAttachment 的干石）为主 ——
- * 雨后场景里坡地石块干得比溪岸边快，这个干湿差是「明暗层次」的一部分。
- *
- * 校验：wetRock ∈ PATH_SYSTEM ⇒ R2 走廊 / R4 鸟居净空跳过（石块本来就在路肩上），
- * 但 R3 溪谷净空仍然生效 ⇒ 必须用 userData.samples 给出 16 个真实落点，
- * 否则 asset-check 会拿整组的 9 个包围盒角点去判，(-8.9, -10.8) 这种「并不存在」的
- * 角点会掉进溪水范围里，报一个假错。
- * R5/R6：改用 support.host 包络盒。包络盒由 layout 表（落点 + 半径）与逐点采样地形
- * 推出，不从网格包围盒反推 ⇒ 它是一条可被证伪的断言，而不是自我循环。
- *   x/z：落点 ± 1.55r（石块水平外沿 r(1+wobble)·scale ≤ 1.41r，碎石外沿 ≤ 1.47r）
- *   y：[min(地面) − 0.20, max(地面 + 1.2r) + 0.06]
+ * 将原先 16 颗孤立圆石全面升级为 16 组多网格天然劈理山石露头（共 ~160+ 个独立岩石 Mesh）：
+ * 每组山石露头包含：
+ * 1) 主劈理山石（wetRock-main）：高细分多面体切削山石，顶面精确对齐 terrainHeight(x,z) + r × 1.2（供石上青苔宿主对齐）；
+ * 2) 冻裂伴生副石（wetRock-split，2 块）：沿岩层节理裂隙错位倚靠在主石旁，采用分层劈理岩（stoneRockStratified）与冷灰安山岩（stoneRock）；
+ * 3) 根部层状基座石板（wetRock-plate，1~2 块）：使用锐棱凸多边形石板（slabGeometry）半埋在主石根部潮湿泥土中；
+ * 4) 散落棱角碎石片（wetRock-chip，4~5 颗）：围绕石根散落的尖锐碎石与扁平砾石，全部严格约束在 support.host 包络盒内。
  */
-import { WET_ROCKS, terrainHeight } from '../layout.js';
-import { group, mesh, place, rng, rockGeometry, triplanarUv } from '../primitives.js';
+import { WET_ROCKS, clamp, terrainHeight } from '../layout.js';
+import { group, mesh, place, rng, rockGeometry, slabGeometry, triplanarUv } from '../primitives.js';
 
 const SEED_BASE = 4703;
 const TOP_LIFT = 1.2;
 const STONE_TILE = 0.42;
 const GRAVEL_TILE = 0.16;
-const STONE_SHAPE = { widthSegments: 22, heightSegments: 14, wobble: 0.26, flatten: 0.635 };
-const GRAVEL_SHAPE = { widthSegments: 10, heightSegments: 7, wobble: 0.34, flatten: 0.6 };
-/** 溪岸 / 路肩 / 坡地三段的 wet 概率：越靠近溪越湿 */
-const WET_ODDS_BY_GROUP = [0.9, 0.6, 0.3];
+
+const MAIN_STONE_SHAPE = { widthSegments: 26, heightSegments: 18, wobble: 0.28, flatten: 0.635 };
+const SPLIT_STONE_SHAPE = { widthSegments: 20, heightSegments: 14, wobble: 0.30, flatten: 0.58 };
+const CHIP_SHAPE = { widthSegments: 12, heightSegments: 8, wobble: 0.36, flatten: 0.46 };
+
+const WET_ODDS_BY_GROUP = [0.75, 0.45, 0.25];
 const HOST_FOOT_FACTOR = 1.55;
 const HOST_Y_SINK = 0.2;
 const HOST_Y_RISE = 0.06;
 
-function seatRock(geo, material, name, x, z, targetTop, rand, tile) {
+function makePlateRing(rx, rz, rand, sides = 6) {
+  const ring = [];
+  for (let i = 0; i < sides; i++) {
+    const a = (i / sides) * Math.PI * 2 + (rand() - 0.5) * 0.22;
+    const k = 0.8 + rand() * 0.26;
+    ring.push([Math.cos(a) * rx * k, Math.sin(a) * rz * k]);
+  }
+  return ring;
+}
+
+function seatRock(geo, material, name, x, z, targetTop, rand, tile, sxRange = 0.26) {
   triplanarUv(geo, tile, [x, 0, z]);
   geo.computeBoundingBox();
   const node = mesh(geo, material, name);
+  const sx = 1 + (rand() - 0.5) * sxRange;
+  const sy = 1 + (rand() - 0.5) * 0.08;
+  const sz = 1 + (rand() - 0.5) * sxRange;
   place(node, {
     x,
-    y: targetTop - geo.boundingBox.max.y,
+    y: targetTop - geo.boundingBox.max.y * sy,
     z,
     ry: rand() * Math.PI * 2,
-    sx: 1 + (rand() - 0.5) * 0.26,
-    sy: 1 + (rand() - 0.5) * 0.1,
-    sz: 1 + (rand() - 0.5) * 0.26
+    sx,
+    sy,
+    sz
   });
   return node;
 }
@@ -60,7 +57,6 @@ function seatRock(geo, material, name, x, z, targetTop, rand, tile) {
 export function createWetRock(M) {
   const root = group('wetRock');
   const samples = [];
-  const grounds = [];
   let meshCount = 0;
 
   let hostX0 = Infinity;
@@ -69,6 +65,9 @@ export function createWetRock(M) {
   let hostZ1 = -Infinity;
   let hostY0 = Infinity;
   let hostY1 = -Infinity;
+
+  const stratMat = M.stoneRockStratified || M.stoneRock;
+  const chipMat = M.stoneChip || M.stonePebble;
 
   WET_ROCKS.forEach((spec, index) => {
     const seed = SEED_BASE + index * 137;
@@ -79,44 +78,85 @@ export function createWetRock(M) {
     const groupIndex = index < 6 ? 0 : index < 12 ? 1 : 2;
     const wet = rand() < WET_ODDS_BY_GROUP[groupIndex];
 
-    const geo = rockGeometry(r, seed, STONE_SHAPE);
-    const rock = seatRock(
-      geo,
-      wet ? M.stoneRockWet : M.stoneRock,
-      `wetRock-${index + 1}`,
-      x, z, top, rand, STONE_TILE
-    );
-    root.add(rock);
-    meshCount += 1;
-    samples.push({ x, z });
-    grounds.push(ground);
-
-    hostX0 = Math.min(hostX0, x - r * HOST_FOOT_FACTOR);
-    hostX1 = Math.max(hostX1, x + r * HOST_FOOT_FACTOR);
-    hostZ0 = Math.min(hostZ0, z - r * HOST_FOOT_FACTOR);
-    hostZ1 = Math.max(hostZ1, z + r * HOST_FOOT_FACTOR);
+    const footLimit = r * HOST_FOOT_FACTOR;
+    hostX0 = Math.min(hostX0, x - footLimit);
+    hostX1 = Math.max(hostX1, x + footLimit);
+    hostZ0 = Math.min(hostZ0, z - footLimit);
+    hostZ1 = Math.max(hostZ1, z + footLimit);
     hostY0 = Math.min(hostY0, ground - HOST_Y_SINK);
     hostY1 = Math.max(hostY1, top + HOST_Y_RISE);
 
-    // 碎石：贴着石块根部，顶面略高于泥地 ⇒ 读作「长在泥里的碎石」而不是悬空
-    const gravelCount = 1 + (rand() < 0.6 ? 1 : 0);
-    for (let i = 0; i < gravelCount; i += 1) {
-      const gr = r * (0.18 + rand() * 0.14);
+    // 1. 主节理山石（顶面锁定为 ground + r * 1.2）
+    const geo = rockGeometry(r, seed, MAIN_STONE_SHAPE);
+    const mainMat = wet ? M.stoneRockWet : (index % 2 === 0 ? M.stoneRock : stratMat);
+    const rock = seatRock(geo, mainMat, `wetRock-${index + 1}`, x, z, top, rand, STONE_TILE, 0.24);
+    root.add(rock);
+    meshCount += 1;
+    samples.push({ x, z });
+
+    // 2. 冻裂伴生副石（2 块，紧邻主石侧翼，营造山石劈裂咬合感）
+    for (let s = 0; s < 2; s++) {
+      const sr = r * (0.44 + rand() * 0.16);
+      const az = s * Math.PI + (rand() - 0.5) * 0.85;
+      const dist = r * (0.52 + rand() * 0.18);
+      const sx = clamp(x + Math.cos(az) * dist, x - footLimit + sr * 1.25, x + footLimit - sr * 1.25);
+      const sz = clamp(z + Math.sin(az) * dist, z - footLimit + sr * 1.25, z + footLimit - sr * 1.25);
+      const sGround = terrainHeight(sx, sz);
+      const sTop = Math.min(top - 0.03, sGround + r * (0.58 + rand() * 0.26));
+      const sGeo = rockGeometry(sr, seed * 17 + s * 41, SPLIT_STONE_SHAPE);
+      const sMat = s === 0 ? stratMat : (wet ? M.stoneRock : M.stoneRockWet);
+      const splitNode = seatRock(sGeo, sMat, `wetRock-split-${index + 1}-${s + 1}`, sx, sz, sTop, rand, STONE_TILE, 0.18);
+      root.add(splitNode);
+      meshCount += 1;
+    }
+
+    // 3. 根部层状基座石板（1~2 块锐棱 slabGeometry）
+    const plateCount = 1 + (index % 2);
+    for (let p = 0; p < plateCount; p++) {
       const az = rand() * Math.PI * 2;
-      const dist = r * (0.9 + rand() * 0.45);
-      const gx = x + Math.cos(az) * dist;
-      const gz = z + Math.sin(az) * dist;
-      const gGeo = rockGeometry(gr, seed * 23 + i, GRAVEL_SHAPE);
+      const dist = r * (0.48 + rand() * 0.22);
+      const prx = r * (0.38 + rand() * 0.14);
+      const prz = r * (0.28 + rand() * 0.12);
+      const px = clamp(x + Math.cos(az) * dist, x - footLimit + prx * 1.2, x + footLimit - prx * 1.2);
+      const pz = clamp(z + Math.sin(az) * dist, z - footLimit + prz * 1.2, z + footLimit - prz * 1.2);
+      const pGround = terrainHeight(px, pz);
+      const thick = 0.045 + rand() * 0.025;
+      const pGeo = triplanarUv(slabGeometry(makePlateRing(prx, prz, rand, 6), thick), STONE_TILE, [px, 0, pz]);
+      const plate = mesh(pGeo, stratMat, `wetRock-plate-${index + 1}-${p + 1}`);
+      place(plate, {
+        x: px,
+        y: Math.max(hostY0 + thick + 0.02, pGround + 0.028 + rand() * 0.02),
+        z: pz,
+        ry: rand() * Math.PI * 2
+      });
+      root.add(plate);
+      meshCount += 1;
+    }
+
+    // 4. 根部散落棱角碎石片（4~5 颗 Scree Chips）
+    const chipCount = 4 + (index % 2);
+    for (let i = 0; i < chipCount; i += 1) {
+      const gr = r * (0.14 + rand() * 0.12);
+      const az = rand() * Math.PI * 2;
+      const dist = r * (0.75 + rand() * 0.36);
+      const gx = clamp(x + Math.cos(az) * dist, x - footLimit + gr * 1.3, x + footLimit - gr * 1.3);
+      const gz = clamp(z + Math.sin(az) * dist, z - footLimit + gr * 1.3, z + footLimit - gr * 1.3);
+      const gGround = terrainHeight(gx, gz);
+      const gGeo = rockGeometry(gr, seed * 23 + i * 19, CHIP_SHAPE);
+      const gMat = i % 3 === 0 ? chipMat : i % 3 === 1 ? M.stoneRock : M.stonePebble;
       const gravel = seatRock(
         gGeo,
-        rand() < 0.5 ? M.stoneRockWet : M.stonePebble,
+        gMat,
         `wetRock-gravel-${index + 1}-${i + 1}`,
-        gx, gz,
-        terrainHeight(gx, gz) + 0.02,
-        rand, GRAVEL_TILE
+        gx,
+        gz,
+        Math.min(top - 0.04, Math.max(hostY0 + gr * 1.5, gGround + 0.025 + rand() * 0.02)),
+        rand,
+        GRAVEL_TILE,
+        0.2
       );
       gravel.userData.noCast = true;
-      gravel.userData.noOutline = true;
+      gravel.userData.noOutline = i >= 2;
       root.add(gravel);
       meshCount += 1;
     }
