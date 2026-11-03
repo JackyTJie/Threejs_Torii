@@ -139,22 +139,51 @@ function ancientStepBlockGeometry(width, thickness, depth, seed, rand) {
   return geo;
 }
 
-function addWeatheredSpallsAndMoss(root, M, k, zFront, top, rand) {
+/**
+ * 立体小松果几何体（由多层螺旋交错的鳞片构成的卵圆锥形松塔，用于百年参道散落物）
+ */
+function pineconeGeometry(radius = 0.026, height = 0.048, seed = 101) {
+  const geo = new THREE.SphereGeometry(radius, 10, 9);
+  const pos = geo.getAttribute('position');
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const v = (y / radius + 1) * 0.5;
+    const theta = Math.atan2(z, x);
+    const coneProfile = 0.55 + 0.65 * Math.sin(v * Math.PI * 0.85);
+    const scaleTier = Math.abs(Math.sin(v * Math.PI * 7.0 + theta * 2.0));
+    const scaleOut = coneProfile * (0.82 + 0.34 * scaleTier);
+    const n = fbm3(x * 40 + seed, y * 40, z * 40, 2);
+    pos.setXYZ(
+      i,
+      x * scaleOut * (0.92 + 0.16 * n),
+      (v - 0.35) * height,
+      z * scaleOut * (0.92 + 0.16 * n)
+    );
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function addWeatheredSpallsAndMoss(root, M, k, zFront, top, rand, pineconeGeo) {
   const czStep = zFront - PATH.tread * 0.5;
   const { x0, x1 } = pathBoundsAt(czStep);
+  const pathCx = (x0 + x1) * 0.5;
 
-  // 1) 圆润风化的石阶边角碎石（采用 rockGeometry 替代直棱方片）
-  const chipCount = rand() < 0.25 ? 1 : 2;
+  // 1) 圆润风化的石阶边角碎石子（散落在台阶两侧与石缝处，避开正中光滑踩踏带）
+  const chipCount = rand() < 0.35 ? 2 : 3;
   for (let i = 0; i < chipCount; i++) {
-    const r = lerp(0.045, 0.095, rand());
-    const cx = lerp(x0 + 0.12, x1 - 0.12, rand());
-    const cz = zFront - lerp(0.05, 0.44, rand());
+    const r = lerp(0.032, 0.078, rand());
+    const sideSign = rand() < 0.62 ? -1 : 1;
+    const cx = clamp(pathCx + sideSign * lerp(0.38, 1.08, rand()), x0 + 0.10, x1 - 0.10);
+    const cz = zFront - lerp(0.06, 0.44, rand());
     const geo = triplanarUv(
       rockGeometry(r, 6400 + k * 31 + i * 7, {
         widthSegments: 10,
         heightSegments: 7,
         wobble: 0.28,
-        flatten: 0.36
+        flatten: 0.38
       }),
       0.35,
       [cx, top, cz]
@@ -162,12 +191,12 @@ function addWeatheredSpallsAndMoss(root, M, k, zFront, top, rand) {
     const chip = mesh(geo, i % 2 === 0 ? M.stonePebble : M.stoneRockWet, `stepChip-${k}-${i}`);
     place(chip, {
       x: cx,
-      y: top - 0.004 + rand() * 0.010,
+      y: top - 0.005 + rand() * 0.008,
       z: cz,
       ry: rand() * Math.PI * 2,
-      sx: 1.15 + rand() * 0.35,
-      sy: 0.65,
-      sz: 0.95 + rand() * 0.35
+      sx: 1.12 + rand() * 0.32,
+      sy: 0.58,
+      sz: 0.92 + rand() * 0.32
     });
     chip.castShadow = true;
     chip.receiveShadow = true;
@@ -175,27 +204,55 @@ function addWeatheredSpallsAndMoss(root, M, k, zFront, top, rand) {
     root.add(chip);
   }
 
-  // 2) 石阶向溪侧（左侧 x0）与阶根背阴缝隙的立体厚青苔条垫
-  const mossCount = rand() < 0.45 ? 1 : 2;
+  // 2) 自然散落的小松果（随机分布在石阶背阴角、侧边与落叶丛旁）
+  if (pineconeGeo && rand() < 0.68) {
+    const coneCount = rand() < 0.38 ? 2 : 1;
+    for (let p = 0; p < coneCount; p++) {
+      const sideBias = rand() < 0.58 ? -1 : 1;
+      const px = clamp(pathCx + sideBias * lerp(0.32, 1.05, rand()), x0 + 0.14, x1 - 0.14);
+      const pz = zFront - lerp(0.10, PATH.tread - 0.08, rand());
+      const coneMat = (k + p) % 2 === 0 ? (M.barkKaede || M.woodWeathered) : M.woodWeathered;
+      const cone = mesh(pineconeGeo, coneMat, `stepPinecone-${k}-${p}`);
+      place(cone, {
+        x: px,
+        y: top + 0.014,
+        z: pz,
+        ry: rand() * Math.PI * 2,
+        sx: 0.85 + rand() * 0.35,
+        sy: 0.85 + rand() * 0.35,
+        sz: 0.85 + rand() * 0.35
+      });
+      cone.rotation.x = Math.PI * 0.38 + (rand() - 0.5) * 0.25;
+      cone.rotation.z = (rand() - 0.5) * 0.35;
+      cone.castShadow = true;
+      cone.receiveShadow = true;
+      cone.userData.noOutline = true;
+      root.add(cone);
+    }
+  }
+
+  // 3) 石阶向溪侧（左侧 x0）与阶根背阴缝隙的微颗粒腐殖土青苔垫（薄贴石缝，绝不在踏面中央突兀凸起）
+  const mossCount = rand() < 0.50 ? 1 : 2;
   for (let m = 0; m < mossCount; m++) {
-    const biasLeft = Math.pow(rand(), 1.65); // 明显偏向左侧溪流潮湿侧
-    const mx = lerp(x0 + 0.08, x1 - 0.25, biasLeft);
-    const mz = m === 0 ? zFront - PATH.tread + 0.06 + rand() * 0.06 : zFront - lerp(0.08, 0.42, rand());
-    const mr = lerp(0.085, 0.155, rand());
+    const mx = m === 0
+      ? lerp(x0 + 0.08, x0 + 0.52, rand())
+      : lerp(x0 + 0.12, x1 - 0.35, Math.pow(rand(), 2.2));
+    const mz = zFront - PATH.tread + 0.045 + rand() * 0.055;
+    const mr = lerp(0.075, 0.135, rand());
     const mGeo = triplanarUv(
       rockGeometry(mr, 7300 + k * 41 + m * 13, {
         widthSegments: 10,
         heightSegments: 7,
-        wobble: 0.26,
-        flatten: 0.22
+        wobble: 0.32,
+        flatten: 0.16
       }),
-      0.28,
+      0.24,
       [mx, top, mz]
     );
     const mossPad = mesh(mGeo, m % 2 === 0 ? M.mossWet : M.mossPatch, `stepMoss-${k}-${m}`);
-    mossPad.position.set(mx, top - 0.003, mz);
+    mossPad.position.set(mx, top - 0.008, mz);
     mossPad.rotation.y = rand() * Math.PI * 2;
-    mossPad.scale.set(1.45, 0.32, 0.95);
+    mossPad.scale.set(1.38, 0.15, 0.82);
     mossPad.castShadow = false;
     mossPad.receiveShadow = true;
     mossPad.userData.noCast = true;
@@ -252,6 +309,7 @@ export function createStoneSteps(M, options = {}) {
     M.leafSheetGroundWet,
     M.leafSheetFloatingAmber || M.leafSheetGroundRust
   ];
+  const stepPineconeGeo = pineconeGeometry(0.026, 0.048, 519);
 
   for (let k = 0; k < steps; k++) {
     const rand = rng(k * 977 + 13);
@@ -293,7 +351,7 @@ export function createStoneSteps(M, options = {}) {
       slabCount++;
     }
 
-    addWeatheredSpallsAndMoss(root, M, k, zFront, top, rand);
+    addWeatheredSpallsAndMoss(root, M, k, zFront, top, rand, stepPineconeGeo);
     addStepLeaves(root, M, k, zFront, top, stepLeafGeos, stepLeafMats);
   }
 

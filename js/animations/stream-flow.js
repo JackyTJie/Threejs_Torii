@@ -182,15 +182,25 @@ export function waterWave(x, z, time, params = ANIM.stream) {
     Math.cos(x * 16.0 - z * 24.0 - time * 14.0) * 0.45
   ) * 0.68;
 
-  // 5) 束水湍急段鱼鳞细波 vs 平缓深潭微澜（幅度严格受坡降与束水比控制，绝不在深潭产生大浪）
+  // 5) 靠近岸边（bankProximity）与靠近石头处的小水波荡漾 + 束水湍急段鱼鳞细波（中央平缓深潭保持澄澈微澜）
+  const bankRatio = Math.min(1, Math.abs(lateral) / Math.max(0.25, hydro.half * 0.88));
+  const bankProximity = Math.max(0, (bankRatio - 0.38) / 0.62);
+  const stoneProximity = Math.min(1, hydro.splash * 1.2 + hydro.splitShear * 1.1 + Math.abs(hydro.vorticity) * 0.9);
+  const edgeWaveMask = Math.min(1, Math.max(bankProximity * 0.85, stoneProximity));
+
+  const bankAndRockWavelets = (
+    Math.sin(s * 22.0 - Math.abs(lateral) * 26.0 - time * 8.2) * 0.55 +
+    Math.cos(s * 29.0 + lateral * 21.0 - time * 9.4) * 0.45
+  ) * 0.48 * edgeWaveMask;
+
   const rapidIntensity = Math.min(1, hydro.slopeFactor * 0.65 + hydro.widthConstrict * 0.35 + casFactor * 0.75);
   const rapidRiffle = (
     Math.sin(s * 14.0 + Math.abs(lateral) * 11.5 - time * 7.8) * 0.55 +
     Math.cos(s * 19.5 - lateral * 14.2 - time * 9.6) * 0.45
-  ) * (0.08 + 0.52 * rapidIntensity);
+  ) * (0.06 + 0.46 * rapidIntensity);
 
   const baseAmp = Math.max(0.014, params.displacementMax * 1.15);
-  return (rapidRiffle + bowWave + splitChevron + karmanVortex + plungeWave) * baseAmp;
+  return (rapidRiffle + bankAndRockWavelets + bowWave + splitChevron + karmanVortex + plungeWave) * baseAmp;
 }
 
 export function waterDisplacement(x, z, time, params = ANIM.stream) {

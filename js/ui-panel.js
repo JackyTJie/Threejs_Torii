@@ -1,9 +1,10 @@
-// 右下角圆球形设置图标与圆角矩形动态参数控制面板（第三优先级）：
-// - 默认收起在画面右下角，仅显示一个低调精致的 44x44px 圆球形设置图标，不干扰画面观赏；
-// - 点击圆球平滑展开圆角矩形毛玻璃控制面板，所有参数均以当前「雨后深林静谧效果」为默认基准；
-// - 支持动态昼夜切换（预设时段 / 24h 时间轴 / 自动昼夜循环）、参道木灯笼暖黄微光亮度、
-//   SSAO 闭塞强度、分层高度雾浓度与流速、鸟居焦点景深 DOF 强度、Bloom 辉光强度、山林微风摆动强度实时调节与一键重置。
+// 右下角圆球形设置图标与圆角矩形动态参数控制面板（青绿色主题色 + 气象系统彩蛋 + 全天时瑞利大气与体积光控制）：
+// - 主题色全面采用清透青绿色（#2dd4bf / #14b8a6），贴合深林幽谷氛围；
+// - 支持 7 大昼夜时段一键切换（雨后 / 深夜 / 蓝调 / 清晨 / 正午 / 黄昏 / 月夜）与 24h 无级流转；
+// - 支持 3 大气象系统彩蛋一键切换（雨后初霁 / 细雨霏霏 / 深山浓雾）；
+// - 支持林间丁达尔体积光束（God Ray）、参道木灯笼暖光亮度、3D 体积雾浓度與流速、SSAO、DOF、Bloom 与微风摆幅调节。
 import { POST } from './config.js';
+import { WEATHER_MODES } from './weather.js';
 
 function formatHour(h) {
   const totalMin = Math.floor(((h % 24) + 24) % 24 * 60);
@@ -13,14 +14,17 @@ function formatHour(h) {
 }
 
 function periodBadge(h) {
-  if (h >= 5.0 && h < 8.5) return '清晨 · 朝雾漫射';
+  if (h >= 4.5 && h < 5.7) return '蓝调 · 紫霭微明';
+  if (h >= 5.7 && h < 8.5) return '清晨 · 朝雾漫射';
   if (h >= 8.5 && h < 11.5) return '雨后 · 静谧深林';
-  if (h >= 11.5 && h < 16.0) return '正午 · 林隙暖阳';
-  if (h >= 16.0 && h < 19.5) return '黄昏 · 暮色残照';
-  return '深夜 · 幽谷月华';
+  if (h >= 11.5 && h < 16.2) return '正午 · 林隙暖阳';
+  if (h >= 16.2 && h < 18.6) return '黄昏 · 光影隧道';
+  if (h >= 18.6 && h < 19.6) return '暮色 · 蓝调残照';
+  if (h >= 19.6 && h < 22.5) return '月夜 · 冷银月华';
+  return '深夜 · 星河天幕';
 }
 
-export function createSettingsPanel({ post, lighting, dayNight, animations }) {
+export function createSettingsPanel({ post, lighting, dayNight, weather, animations }) {
   if (
     typeof document === 'undefined' ||
     !document.body ||
@@ -46,10 +50,10 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
       width: 44px;
       height: 44px;
       border-radius: 50%;
-      border: 1px solid rgba(220, 235, 224, 0.28);
-      background: radial-gradient(circle at 32% 28%, rgba(46, 68, 56, 0.92), rgba(18, 28, 23, 0.95));
-      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45), inset 0 1px 1px rgba(255, 255, 255, 0.18);
-      color: #e6efe8;
+      border: 1px solid rgba(45, 212, 191, 0.38);
+      background: radial-gradient(circle at 32% 28%, rgba(28, 72, 66, 0.92), rgba(12, 28, 25, 0.96));
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45), inset 0 1px 1px rgba(153, 246, 228, 0.22);
+      color: #ccfbf1;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -61,8 +65,8 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
     }
     .torii-orb-btn:hover {
       transform: scale(1.07);
-      border-color: rgba(217, 72, 46, 0.72);
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55), 0 0 12px rgba(208, 62, 38, 0.35);
+      border-color: rgba(45, 212, 191, 0.85);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55), 0 0 14px rgba(45, 212, 191, 0.42);
     }
     .torii-orb-btn svg {
       width: 20px;
@@ -77,15 +81,15 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
       position: absolute;
       right: 0;
       bottom: 56px;
-      width: 316px;
-      padding: 16px 18px;
+      width: 332px;
+      padding: 15px 17px;
       border-radius: 18px;
-      background: rgba(16, 25, 21, 0.86);
-      border: 1px solid rgba(200, 222, 208, 0.18);
-      box-shadow: 0 16px 42px rgba(0, 0, 0, 0.58), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      background: rgba(12, 24, 22, 0.88);
+      border: 1px solid rgba(45, 212, 191, 0.24);
+      box-shadow: 0 16px 42px rgba(0, 0, 0, 0.62), inset 0 1px 0 rgba(153, 246, 228, 0.12);
       backdrop-filter: blur(18px);
       -webkit-backdrop-filter: blur(18px);
-      color: #dfeae2;
+      color: #dfeae6;
       opacity: 0;
       transform: translateY(10px) scale(0.96);
       transform-origin: bottom right;
@@ -100,15 +104,15 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       padding-bottom: 8px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      border-bottom: 1px solid rgba(45, 212, 191, 0.14);
     }
     .torii-panel-title {
       font-size: 13px;
       font-weight: 600;
       letter-spacing: 0.04em;
-      color: #f0f5f1;
+      color: #f0fdfa;
       display: flex;
       align-items: center;
       gap: 6px;
@@ -117,56 +121,71 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
       width: 7px;
       height: 7px;
       border-radius: 50%;
-      background: #d8432e;
-      box-shadow: 0 0 8px rgba(216, 67, 46, 0.8);
+      background: #2dd4bf;
+      box-shadow: 0 0 8px rgba(45, 212, 191, 0.85);
     }
     .torii-panel-badge {
       font-size: 11px;
-      color: #9cb8a5;
-      background: rgba(255, 255, 255, 0.06);
+      color: #5eead4;
+      background: rgba(45, 212, 191, 0.12);
+      border: 1px solid rgba(45, 212, 191, 0.22);
       padding: 2px 8px;
       border-radius: 999px;
     }
+    .torii-section-label {
+      font-size: 10.5px;
+      color: #7ab8ae;
+      letter-spacing: 0.04em;
+      margin-bottom: 5px;
+    }
     .torii-presets {
       display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 5px;
-      margin-bottom: 12px;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 4px;
+      margin-bottom: 10px;
     }
-    .torii-preset-btn {
-      background: rgba(255, 255, 255, 0.06);
+    .torii-weather-bar {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-bottom: 11px;
+    }
+    .torii-preset-btn, .torii-weather-btn {
+      background: rgba(255, 255, 255, 0.05);
       border: 1px solid rgba(255, 255, 255, 0.1);
-      color: #c9d8cd;
+      color: #c5dcd7;
       border-radius: 8px;
       padding: 5px 0;
       font-size: 11px;
       cursor: pointer;
       transition: all 0.18s ease;
     }
-    .torii-preset-btn:hover {
-      background: rgba(255, 255, 255, 0.13);
+    .torii-preset-btn:hover, .torii-weather-btn:hover {
+      background: rgba(45, 212, 191, 0.15);
+      border-color: rgba(45, 212, 191, 0.42);
       color: #ffffff;
     }
-    .torii-preset-btn.active {
-      background: rgba(208, 64, 42, 0.28);
-      border-color: rgba(224, 82, 58, 0.75);
-      color: #fff5f2;
+    .torii-preset-btn.active, .torii-weather-btn.active {
+      background: rgba(20, 184, 166, 0.28);
+      border-color: rgba(45, 212, 191, 0.82);
+      color: #ecfdf5;
+      box-shadow: 0 0 10px rgba(45, 212, 191, 0.22);
       font-weight: 600;
     }
     .torii-row {
-      margin-bottom: 9px;
+      margin-bottom: 8px;
     }
     .torii-row-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-size: 11.5px;
-      color: #b8ccc0;
-      margin-bottom: 4px;
+      font-size: 11.2px;
+      color: #b4d0c9;
+      margin-bottom: 3px;
     }
     .torii-row-val {
       font-variant-numeric: tabular-nums;
-      color: #e4efe7;
+      color: #99f6e4;
       font-size: 11px;
     }
     .torii-slider {
@@ -175,7 +194,7 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
       width: 100%;
       height: 5px;
       border-radius: 999px;
-      background: rgba(255, 255, 255, 0.12);
+      background: rgba(45, 212, 191, 0.16);
       outline: none;
       cursor: pointer;
     }
@@ -185,9 +204,9 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
       width: 13px;
       height: 13px;
       border-radius: 50%;
-      background: #e8f2ec;
-      border: 2px solid #d44732;
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+      background: #f0fdfa;
+      border: 2px solid #14b8a6;
+      box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45), 0 0 6px rgba(45, 212, 191, 0.45);
       cursor: pointer;
       transition: transform 0.15s ease;
     }
@@ -198,9 +217,9 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-top: 12px;
-      padding-top: 10px;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      margin-top: 10px;
+      padding-top: 9px;
+      border-top: 1px solid rgba(45, 212, 191, 0.14);
       gap: 8px;
     }
     .torii-toggle-btn, .torii-reset-btn {
@@ -209,18 +228,20 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
       border-radius: 9px;
       font-size: 11.5px;
       cursor: pointer;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      background: rgba(255, 255, 255, 0.07);
-      color: #d6e4da;
+      border: 1px solid rgba(45, 212, 191, 0.22);
+      background: rgba(20, 184, 166, 0.10);
+      color: #ccfbf1;
       transition: all 0.18s ease;
     }
     .torii-toggle-btn.active {
-      background: rgba(68, 138, 96, 0.34);
-      border-color: rgba(110, 196, 142, 0.68);
-      color: #edfff3;
+      background: rgba(20, 184, 166, 0.34);
+      border-color: rgba(45, 212, 191, 0.85);
+      color: #f0fdfa;
+      box-shadow: 0 0 12px rgba(45, 212, 191, 0.25);
     }
     .torii-toggle-btn:hover, .torii-reset-btn:hover {
-      background: rgba(255, 255, 255, 0.15);
+      background: rgba(20, 184, 166, 0.24);
+      border-color: rgba(45, 212, 191, 0.65);
       color: #ffffff;
     }
   `;
@@ -241,7 +262,7 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
   const dot = document.createElement('span');
   dot.className = 'torii-panel-dot';
   const titleText = document.createElement('span');
-  titleText.textContent = '神社境域 · 氛围与光影控制';
+  titleText.textContent = '稻荷山境 · 大气光影与气象系统';
   title.appendChild(dot);
   title.appendChild(titleText);
 
@@ -252,14 +273,17 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
   header.appendChild(badge);
   panel.appendChild(header);
 
+  // 昼夜天光预设栏（7时段）
   const presetsWrap = document.createElement('div');
   presetsWrap.className = 'torii-presets';
   const presetDefs = [
-    { id: 'default', label: '雨后默认', hour: 10.5 },
+    { id: 'default', label: '雨后', hour: 10.5 },
     { id: 'midnight', label: '深夜', hour: 0.0 },
-    { id: 'dawn', label: '清晨', hour: 6.0 },
+    { id: 'blueDawn', label: '蓝调', hour: 5.15 },
+    { id: 'dawn', label: '清晨', hour: 6.3 },
     { id: 'noon', label: '正午', hour: 13.0 },
-    { id: 'dusk', label: '黄昏', hour: 18.0 }
+    { id: 'dusk', label: '黄昏', hour: 17.65 },
+    { id: 'moonlight', label: '月夜', hour: 21.2 }
   ];
   const presetBtns = new Map();
   for (const p of presetDefs) {
@@ -282,6 +306,30 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
 
   function highlightPreset(activeId) {
     for (const [id, btn] of presetBtns) {
+      if (btn.classList) btn.classList.toggle('active', id === activeId);
+    }
+  }
+
+  // 气象系统（可切换彩蛋：雨后初霁 / 细雨霏霏 / 深山浓雾）
+  const weatherBar = document.createElement('div');
+  weatherBar.className = 'torii-weather-bar';
+  const weatherBtns = new Map();
+  for (const w of WEATHER_MODES) {
+    const wb = document.createElement('button');
+    wb.type = 'button';
+    wb.className = `torii-weather-btn${w.id === 'clear' ? ' active' : ''}`;
+    wb.textContent = w.label;
+    wb.addEventListener('click', () => {
+      if (weather && weather.setMode) weather.setMode(w.id);
+      highlightWeather(w.id);
+    });
+    weatherBtns.set(w.id, wb);
+    weatherBar.appendChild(wb);
+  }
+  panel.appendChild(weatherBar);
+
+  function highlightWeather(activeId) {
+    for (const [id, btn] of weatherBtns) {
       if (btn.classList) btn.classList.toggle('active', id === activeId);
     }
   }
@@ -327,7 +375,7 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
 
   // 1) 昼夜时刻滑块
   const timeRow = makeSliderRow({
-    label: '昼夜时刻（日照 / 月光过渡）',
+    label: '全天时瑞利大气时刻（24h）',
     min: 0,
     max: 24,
     step: 0.05,
@@ -339,20 +387,57 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
     }
   });
 
-  // 2) 参道春日木灯笼暖黄微光亮度滑块
+  // 2) 林间丁达尔体积光（God Ray）强度
+  const godRayRow = makeSliderRow({
+    label: '林间丁达尔体积光束（God Ray）',
+    min: 0,
+    max: 2.2,
+    step: 0.05,
+    value: post && post.getGodRayStrength ? post.getGodRayStrength() : 1.0,
+    onInput: (v) => {
+      if (post && post.setGodRayStrength) post.setGodRayStrength(v);
+    }
+  });
+
+  // 3) 参道春日木灯笼暖黄微光亮度滑块
   const lanternRow = makeSliderRow({
-    label: '参道灯笼暖黄微光亮度',
+    label: '参道灯笼暖光与地面格子光斑',
     min: 0,
     max: 2.0,
     step: 0.05,
-    value: lighting && lighting.getLanternBrightness ? lighting.getLanternBrightness() : 0.42,
+    value: lighting && lighting.getLanternBrightness ? lighting.getLanternBrightness() : 0.38,
     onInput: (v) => {
       if (dayNight && dayNight.setLanternOverride) dayNight.setLanternOverride(v);
       else if (lighting && lighting.setLanternBrightness) lighting.setLanternBrightness(v);
     }
   });
 
-  // 3) SSAO 闭塞阴影强度
+  // 4) 3D 体积雾浓度
+  const fogDensityRow = makeSliderRow({
+    label: '三维体积雾浓度（谷底浓 / 林冠淡）',
+    min: 0,
+    max: 0.85,
+    step: 0.01,
+    value: POST.heightFog.density,
+    onInput: (v) => {
+      if (dayNight) dayNight.setFogOverride(v);
+      if (post) post.setHeightFogDensity(v);
+    }
+  });
+
+  // 5) 体积雾流动速度
+  const fogSpeedRow = makeSliderRow({
+    label: '三维体积雾沿参道漂移流速',
+    min: 0,
+    max: 0.8,
+    step: 0.01,
+    value: POST.heightFog.speed,
+    onInput: (v) => {
+      if (post) post.setFogSpeed(v);
+    }
+  });
+
+  // 6) SSAO 闭塞阴影强度
   const ssaoRow = makeSliderRow({
     label: 'SSAO 环境光遮蔽（叶隙 / 石缝）',
     min: 0,
@@ -364,32 +449,7 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
     }
   });
 
-  // 4) 分层动态高度雾浓度
-  const fogDensityRow = makeSliderRow({
-    label: '分层高度雾浓度（低谷浓 / 高处淡）',
-    min: 0,
-    max: 0.85,
-    step: 0.01,
-    value: POST.heightFog.density,
-    onInput: (v) => {
-      if (dayNight) dayNight.setFogOverride(v);
-      if (post) post.setHeightFogDensity(v);
-    }
-  });
-
-  // 5) 高度雾噪声流动速度
-  const fogSpeedRow = makeSliderRow({
-    label: '山谷雾气扰动流速',
-    min: 0,
-    max: 0.8,
-    step: 0.01,
-    value: POST.heightFog.speed,
-    onInput: (v) => {
-      if (post) post.setFogSpeed(v);
-    }
-  });
-
-  // 6) 鸟居焦点景深 DOF 强度
+  // 7) 鸟居焦点景深 DOF 强度
   const dofRow = makeSliderRow({
     label: '鸟居焦点景深虚化（DOF）',
     min: 0,
@@ -401,7 +461,7 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
     }
   });
 
-  // 7) Bloom 辉光强度
+  // 8) Bloom 辉光与山林微风摆动
   const bloomRow = makeSliderRow({
     label: '暗部透气辉光（Bloom）',
     min: 0,
@@ -414,7 +474,6 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
     }
   });
 
-  // 8) 植被微风摆动强度
   const windRow = makeSliderRow({
     label: '山林枝叶微风摆幅',
     min: 0,
@@ -453,10 +512,13 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
   resetBtn.textContent = '恢复默认基准';
   resetBtn.addEventListener('click', () => {
     if (dayNight) dayNight.resetDefault();
+    if (weather && weather.resetDefault) weather.resetDefault();
     updateCycleBtn();
     highlightPreset('default');
+    highlightWeather('clear');
     timeRow.setValue(10.5);
-    lanternRow.setValue(0.42);
+    godRayRow.setValue(1.0);
+    lanternRow.setValue(0.38);
     ssaoRow.setValue(1.0);
     fogDensityRow.setValue(0.24);
     fogSpeedRow.setValue(0.35);
@@ -464,6 +526,7 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
     bloomRow.setValue(0.24);
     windRow.setValue(1.0);
     if (post) {
+      post.setGodRayStrength(1.0);
       post.setSsaoStrength(1.0);
       post.setHeightFogDensity(0.24);
       post.setFogSpeed(0.35);
@@ -497,7 +560,7 @@ export function createSettingsPanel({ post, lighting, dayNight, animations }) {
   const orbBtn = document.createElement('button');
   orbBtn.type = 'button';
   orbBtn.className = 'torii-orb-btn';
-  orbBtn.title = '展开/收起光影与昼夜设置';
+  orbBtn.title = '展开/收起大气光影与气象设置';
   orbBtn.innerHTML = `
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="3.2"></circle>

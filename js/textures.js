@@ -504,21 +504,43 @@ export function leafTexture({ size = 256, base = 0xc4562f, edge = 0x8f3a20, vein
   });
 }
 
-export function mossTexture({ size = 512, base = 0x5d7a4a, wet = 0x46603a, seed = 71 } = {}) {
-  return cached(`moss-${size}-${seed}`, () => {
+export function mossTexture({ size = 512, base = 0x2e4524, wet = 0x1f3018, soil = 0x3f372d, seed = 71 } = {}) {
+  return cached(`moss-${size}-${base}-${seed}`, () => {
     const canvas = makeCanvas(size);
     const cBase = rgbOf(base);
     const cWet = rgbOf(wet);
+    const cSoil = rgbOf(soil);
     fillPixels(canvas, (x, y, w, h) => {
       const u = x / w;
       const v = y / h;
-      const tuft = fbm(u * 30, v * 30, 4, seed);
-      const t = clamp01(tuft * 1.2 - 0.25);
-      const r = mix(cWet.r, cBase.r, t);
-      const g = mix(cWet.g, cBase.g, t);
-      const b = mix(cWet.b, cBase.b, t);
-      const speck = hash2(Math.floor(u * 160), Math.floor(v * 160), seed) > 0.94 ? 12 : 0;
-      return [clampByte(r + speck), clampByte(g + speck * 0.8), clampByte(b + speck * 0.5)];
+      // 底层：灰褐色潮湿腐殖土基底与细微石粉颗粒
+      const earthMacro = fbm(u * 14, v * 14, 4, seed + 5);
+      const earthGrit = valueNoise(u * 110, v * 110, seed + 19);
+      let r = cSoil.r * (0.78 + 0.36 * earthMacro) + (earthGrit - 0.5) * 16;
+      let g = cSoil.g * (0.78 + 0.36 * earthMacro) + (earthGrit - 0.5) * 14;
+      let b = cSoil.b * (0.78 + 0.36 * earthMacro) + (earthGrit - 0.5) * 12;
+
+      // 上层：密集细小的深绿色苔藓微绒簇点（千万颗细小深绿孢子/叶簇点附着在灰褐土上，告别纯青色塑料感）
+      const patchMask = clamp01(fbm(u * 9.5, v * 9.5, 4, seed) * 1.35 - 0.22);
+      const tuftMed = fbm(u * 42, v * 42, 3, seed + 31);
+      const microDot1 = valueNoise(u * 150, v * 150, seed + 47);
+      const microDot2 = hash2(Math.floor(u * 260), Math.floor(v * 260), seed + 61);
+      const microDot3 = hash2(Math.floor(u * 420), Math.floor(v * 420), seed + 83);
+
+      // 细小深绿点阵密度：簇心密集、边缘稀疏露出底层灰褐土
+      const dotField = clamp01((tuftMed * 0.42 + microDot1 * 0.33 + microDot2 * 0.25) * patchMask * 1.45 - 0.18);
+      const tipTone = clamp01(microDot2 * 0.6 + microDot3 * 0.4);
+      const mr = mix(cWet.r, cBase.r, tipTone);
+      const mg = mix(cWet.g, cBase.g, tipTone);
+      const mb = mix(cWet.b, cBase.b, tipTone);
+
+      r = mix(r, mr, dotField * 0.88);
+      g = mix(g, mg, dotField * 0.88);
+      b = mix(b, mb, dotField * 0.88);
+
+      // 超细微粗糙明暗颗粒感（彻底消除光滑反光塑料感）
+      const roughGrain = (microDot3 - 0.5) * 22;
+      return [clampByte(r + roughGrain * 0.7), clampByte(g + roughGrain), clampByte(b + roughGrain * 0.6)];
     });
     return toTexture(canvas, { repeat: 1 });
   });

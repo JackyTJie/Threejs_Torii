@@ -60,13 +60,14 @@ function stoneStepZone(name, { seed, mossHeight, mossAmount, wearStart, wearBand
     band: wearBand,
     wearAmount: 0.56,
     dustAmount: 0.26,
-    roughnessVar: 0.22
+    roughnessVar: 0.46,
+    toriiMode: 3.0
   });
   applyMossAttachment(material, {
     color: PALETTE.mossWet,
     height: mossHeight,
     band: 1.25,
-    amount: mossAmount * 1.35
+    amount: mossAmount * 1.15
   });
   applyShadowLift(material, { lift: 0.08, knee: 0.38 });
   return material;
@@ -395,10 +396,10 @@ export function createMaterialLibrary() {
   }), 'stoneStepWet');
   applyWeathering(M.stoneStepWet, {
     wear: 0x363e42, dust: PALETTE.soilWet, start: 0, band: 1.2,
-    wearAmount: 0.38, dustAmount: 0.20, roughnessVar: 0.28
+    wearAmount: 0.38, dustAmount: 0.20, roughnessVar: 0.54, toriiMode: 3.0
   });
   applyMossAttachment(M.stoneStepWet, {
-    color: PALETTE.mossWet, height: 3.2, band: 1.8, amount: 0.46
+    color: PALETTE.mossWet, height: 3.2, band: 1.8, amount: 0.42
   });
   applyShadowLift(M.stoneStepWet, { lift: 0.22, knee: 0.52 });
 
@@ -610,28 +611,47 @@ export function createMaterialLibrary() {
   M.woodWeathered = stem('woodWeathered', { color: 0xffffff, seed: 79, planks: 5, wear: 0.46 });
   applyMossAttachment(M.woodWeathered, { color: PALETTE.mossDamp, height: 1.1, band: 0.9, amount: 0.45 });
 
-  /* ---------------- 青苔 ---------------- */
+  /* ---------------- 青苔（底层灰褐腐殖土 + 上层细密深绿苔点，粗糙哑光无塑料反光） ---------------- */
   M.mossPatch = named(toon({
     color: 0xffffff, band: 'soft',
-    map: mossTexture({ size: 512, base: 0x4b7834, wet: 0x355924, seed: 71 })
+    map: mossTexture({ size: 512, base: 0x2b4222, wet: 0x1c2e16, soil: 0x3e362c, seed: 71 })
   }), 'mossPatch');
-  applyShadowLift(M.mossPatch, { lift: 0.28, knee: 0.58 });
+  applyWeathering(M.mossPatch, {
+    wear: 0x383027, dust: 0x453c31, start: 0, band: 2.0,
+    wearAmount: 0.42, dustAmount: 0.28, roughnessVar: 0.0, toriiMode: 4.0
+  });
+  applyShadowLift(M.mossPatch, { lift: 0.16, knee: 0.46 });
+
   M.mossWet = named(toon({
     color: 0xffffff, band: 'soft',
-    map: mossTexture({ size: 512, base: 0x3d6629, wet: 0x4e7c37, seed: 73 })
+    map: mossTexture({ size: 512, base: 0x243b1d, wet: 0x2f4a26, soil: 0x383026, seed: 73 })
   }), 'mossWet');
-  applyShadowLift(M.mossWet, { lift: 0.28, knee: 0.58 });
+  applyWeathering(M.mossWet, {
+    wear: 0x342c24, dust: 0x42392e, start: 0, band: 2.0,
+    wearAmount: 0.44, dustAmount: 0.26, roughnessVar: 0.0, toriiMode: 4.0
+  });
+  applyShadowLift(M.mossWet, { lift: 0.16, knee: 0.46 });
+
   M.mossDamp = named(toon({
     color: 0xffffff, band: 'soft',
-    map: mossTexture({ size: 512, base: 0x335722, wet: 0x467330, seed: 77 })
+    map: mossTexture({ size: 512, base: 0x1f3319, wet: 0x2c4423, soil: 0x362e24, seed: 77 })
   }), 'mossDamp');
-  applyShadowLift(M.mossDamp, { lift: 0.28, knee: 0.58 });
+  applyWeathering(M.mossDamp, {
+    wear: 0x322a22, dust: 0x40372c, start: 0, band: 2.0,
+    wearAmount: 0.45, dustAmount: 0.28, roughnessVar: 0.0, toriiMode: 4.0
+  });
+  applyShadowLift(M.mossDamp, { lift: 0.16, knee: 0.46 });
+
   M.mossStone = named(toon({
     color: 0xffffff, band: 'mid',
-    map: mossTexture({ size: 512, base: 0x467330, wet: 0x325421, seed: 83 })
+    map: mossTexture({ size: 512, base: 0x283e20, wet: 0x1b2c15, soil: 0x423a30, seed: 83 })
   }), 'mossStone');
+  applyWeathering(M.mossStone, {
+    wear: 0x383028, dust: 0x463d32, start: 0, band: 2.0,
+    wearAmount: 0.42, dustAmount: 0.28, roughnessVar: 0.0, toriiMode: 4.0
+  });
   applyMossAttachment(M.mossStone, { color: PALETTE.mossWet, height: 2.2, band: 1.2, amount: 0.4 });
-  applyShadowLift(M.mossStone, { lift: 0.28, knee: 0.58 });
+  applyShadowLift(M.mossStone, { lift: 0.16, knee: 0.46 });
 
   /* ---------------- 水体 ---------------- */
   M.waterSurface = water('waterSurface', {

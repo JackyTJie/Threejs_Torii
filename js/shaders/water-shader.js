@@ -1,15 +1,13 @@
 // 分区水动力学山涧溪流着色器系统（Zoned Mountain Stream Shader System）：
 //
-// 彻底消除「大海长波浪」感，根据全流域水动力学分区纹理（uHydroTex = simulator.obstacleTex）
-// 在不同区域应用针对性的波浪算法：
-//   1. 平缓深潭区（Calm Pools，regimeSpeed < 0.35）：
-//      水面极其平缓（起伏 < 2mm），清澈见底透出泥沙卵石，清晰倒映翠绿林冠与朱红鸟居，阳光下泛起细腻微光；
-//   2. 束水湍急与石头八字分流区（Rapids & Bifurcation Split-Flow）：
-//      流线沿岩石两侧势流偏转角（flowDir）加速分流，产生高频鱼鳞状八字急流细波（Anisotropic Chevron Riffles）；
-//   3. 石头迎水驻点与 6 级小瀑布跌水激荡区（Bow Wave Cushion & Waterfall Plunge Splash）：
-//      迎石正面水体受阻隆起弧形水枕，瀑布落水潭产生高频水跃（Hydraulic Jump）与晶莹飞溅水花（Splash Droplets）；
-//   4. 石后卡门涡街与潭湾漩涡区（Kármán Vortex Street & Eddy Swirls）：
-//      背水回流区形成对数螺旋旋转流线与微凹涡心，带动细微水纹盘旋打转。
+// 保持当前清晰的水体分层与平缓中央深潭清澈见底效果，同时重点强化「靠近岸边」与「靠近石头周围」的
+// 细密小水波荡漾、水流激荡与水光粼粼高光反射（Bank & Boulder Shimmering Wavelets）：
+//   1. 中央平缓深潭区（Calm Center Pools）：
+//      水面澄澈平和，清晰透出水底泥沙、卵石与水下斯涅尔焦散，倒映翠绿林冠与朱红鸟居；
+//   2. 靠近岸边与岩石周围（Near-Bank & Near-Stone Shimmering Wavelets）：
+//      岸际回波与绕石分流激起灵动交织的细小水波纹（小水波荡漾），波脊连续泛起晶莹温润的粼粼波光（消除颗粒噪点感）；
+//   3. 石头迎水驻波、两侧八字分流、6 级小瀑布跌水与石后卡门涡街漩涡：
+//      迎水面隆起弧形水枕激浪，两侧拉出八字分流波脊，瀑布下形成水跃白沫，石后回流窝带动涟漪与落叶盘旋。
 
 export const WATER_SWE_VERT_UNIFORMS = /* glsl */ `
   uniform float uTime;
@@ -54,25 +52,36 @@ export const WATER_SWE_VERT_DISPLACE = /* glsl */ `
   float sAlong = dot( wp, localFlowDir );
   float sCross = dot( wp, localCrossDir );
 
-  // 分区波浪几何位移（彻底告别大海长波浪！平缓潭水接近镜面微澜，湍急与迎石/跌水处局部激荡起伏）：
-  // 1) 湍急段与八字分流区的细密鱼鳞状急流波（波长短 0.25~0.4m，振幅随流速缩放）
-  float rapidWeight = smoothstep( 0.28, 0.75, regimeSpeed );
+  // 估算距溪心距离，识别「靠近岸边」与「靠近石头」的活跃小水波区域
+  float approxCx = -3.25 + 0.58 * sin( wp.y * 0.36 + 0.5 ) + 0.28 * cos( wp.y * 0.21 - 0.8 );
+  float bankDistV = abs( wp.x - approxCx );
+  float bankWaveMask = smoothstep( 0.32, 0.88, bankDistV );
+  float stoneWaveMask = clamp( splashZone * 1.35 + vortexZone * 1.15 + smoothstep( 0.38, 0.78, regimeSpeed ) * 0.65, 0.0, 1.0 );
+  float activeWaveletZone = clamp( max( bankWaveMask * 0.85, stoneWaveMask ), 0.0, 1.0 );
+
+  // 1) 湍急段与八字分流区的细密鱼鳞状急流波
+  float rapidWeight = smoothstep( 0.26, 0.74, regimeSpeed );
   float chevronPhase1 = sAlong * 18.5 + abs( sCross ) * 14.0 - uTime * ( 6.5 + 4.5 * regimeSpeed );
   float chevronPhase2 = sAlong * 26.0 - sCross * 19.5 - uTime * ( 8.8 + 5.2 * regimeSpeed );
   float rapidWaveY = ( sin( chevronPhase1 ) * 0.0055 + cos( chevronPhase2 ) * 0.0038 ) * rapidWeight;
 
-  // 2) 石头迎水驻波水枕与小瀑布落水激荡水跃（局部隆起 + 高频飞溅波峰）
-  float splashChop = sin( wp.x * 28.0 + wp.y * 24.0 - uTime * 14.5 ) * cos( wp.x * 22.0 - wp.y * 31.0 - uTime * 16.2 );
-  float bowAndPlungeY = splashZone * ( 0.014 + 0.009 * splashChop );
+  // 2) 靠近岸边与靠近石头处的灵动小水波荡漾（细密交织涟漪，不动摇中央平缓深潭）
+  float bankRipple1 = sin( sAlong * 24.0 - bankDistV * 28.0 - uTime * 7.4 );
+  float bankRipple2 = cos( sAlong * 31.0 + bankDistV * 22.0 - uTime * 8.6 );
+  float edgeWaveletY = ( bankRipple1 * 0.0048 + bankRipple2 * 0.0036 ) * activeWaveletZone;
 
-  // 3) 石后卡门涡街与潭湾漩涡微凹（涡心下陷 4mm + 旋转波纹）
+  // 3) 石头迎水驻波水枕与小瀑布落水激荡水跃
+  float splashChop = sin( wp.x * 24.0 + wp.y * 20.0 - uTime * 11.5 ) * cos( wp.x * 19.0 - wp.y * 25.0 - uTime * 13.0 );
+  float bowAndPlungeY = splashZone * ( 0.013 + 0.008 * splashChop );
+
+  // 4) 石后卡门涡街与潭湾漩涡微凹
   float vortexDimpleY = vortexZone * ( -0.0045 + 0.0032 * sin( sAlong * 22.0 + sCross * 22.0 - uTime * 9.5 ) );
 
-  // 4) 平缓深潭微澜（振幅仅 1.2mm，保持山林静水澄澈感）
-  float calmRippleY = sin( sAlong * 9.5 - uTime * 3.2 + sCross * 6.0 ) * 0.0012 * ( 1.0 - rapidWeight * 0.7 );
+  // 5) 中央平缓深潭微澜（保持澄澈见底与静谧层次）
+  float calmRippleY = sin( sAlong * 9.5 - uTime * 3.2 + sCross * 6.0 ) * 0.0012 * ( 1.0 - activeWaveletZone * 0.65 );
 
   float sweMask = ( 1.0 - isSolidObs ) * step( 0.01, uSweDisplaceScale );
-  float zonedWaveY = rapidWaveY + bowAndPlungeY + vortexDimpleY + calmRippleY;
+  float zonedWaveY = rapidWaveY + edgeWaveletY + bowAndPlungeY + vortexDimpleY + calmRippleY;
   float totalDispY = ( sweSample.r * uSweDisplaceScale * 1.15 + zonedWaveY ) * sweMask;
 
   transformed.y += totalDispY;
@@ -82,10 +91,12 @@ export const WATER_SWE_VERT_DISPLACE = /* glsl */ `
   float dSweDx = ( sweHR - sweHL ) * uSweDisplaceScale * 1.15 / max( 0.01, worldStep.x );
   float dSweDz = ( sweHU - sweHD ) * uSweDisplaceScale * 1.15 / max( 0.01, worldStep.y );
 
-  float dRapidDAlong = ( cos( chevronPhase1 ) * 18.5 * 0.0055 - sin( chevronPhase2 ) * 26.0 * 0.0038 ) * rapidWeight;
-  float dRapidDCross = ( cos( chevronPhase1 ) * 14.0 * sign( sCross ) * 0.0055 + sin( chevronPhase2 ) * 19.5 * 0.0038 ) * rapidWeight;
-  float dSplashDx = splashZone * 0.009 * 25.0 * cos( wp.x * 28.0 + wp.y * 24.0 - uTime * 14.5 );
-  float dSplashDz = splashZone * 0.009 * 24.0 * sin( wp.x * 22.0 - wp.y * 31.0 - uTime * 16.2 );
+  float dRapidDAlong = ( cos( chevronPhase1 ) * 18.5 * 0.0055 - sin( chevronPhase2 ) * 26.0 * 0.0038 ) * rapidWeight
+                     + ( cos( sAlong * 24.0 - bankDistV * 28.0 - uTime * 7.4 ) * 24.0 * 0.0048 ) * activeWaveletZone;
+  float dRapidDCross = ( cos( chevronPhase1 ) * 14.0 * sign( sCross ) * 0.0055 + sin( chevronPhase2 ) * 19.5 * 0.0038 ) * rapidWeight
+                     - ( sin( sAlong * 31.0 + bankDistV * 22.0 - uTime * 8.6 ) * 22.0 * 0.0036 ) * activeWaveletZone;
+  float dSplashDx = splashZone * 0.008 * 22.0 * cos( wp.x * 24.0 + wp.y * 20.0 - uTime * 11.5 );
+  float dSplashDz = splashZone * 0.008 * 20.0 * sin( wp.x * 19.0 - wp.y * 25.0 - uTime * 13.0 );
 
   float dZonedDx = localFlowDir.x * dRapidDAlong + localCrossDir.x * dRapidDCross + dSplashDx;
   float dZonedDz = localFlowDir.y * dRapidDAlong + localCrossDir.y * dRapidDCross + dSplashDz;
@@ -95,9 +106,9 @@ export const WATER_SWE_VERT_DISPLACE = /* glsl */ `
     1.0,
     -( dSweDz + dZonedDz * sweMask )
   ) );
-  vSweAgitation = max( sweSample.a, splashZone * 0.9 + vortexZone * 0.45 + rapidWeight * 0.25 );
+  vSweAgitation = max( sweSample.a, splashZone * 0.92 + vortexZone * 0.55 + activeWaveletZone * 0.48 );
   vSweObstacle = isSolidObs;
-  vWaveCrest = clamp( totalDispY * 28.0 + 0.5, 0.0, 1.0 );
+  vWaveCrest = clamp( totalDispY * 32.0 + 0.5, 0.0, 1.0 );
 `;
 
 export const WATER_SWE_VERT_CLIP = /* glsl */ `
@@ -192,21 +203,20 @@ export const WATER_FLOW_FRAG = /* glsl */ `
     float beamBoost = max( max( sunBeam1, sunBeam2 ), max( sunBeam3, sunBeam4 ) );
 
     float rawSun = macroGap * 0.62 + leafGap * 0.38 + beamBoost * 0.38;
-    return smoothstep( 0.46, 0.72, rawSun );
+    return smoothstep( 0.42, 0.70, rawSun );
   }
 
   /**
-   * 分区各向异性微表面水波梯度（Zoned Anisotropic Wave Gradient）：
-   * - 平缓深潭（regimeSpeed 低）：柔和舒展的细微张力波；
-   * - 湍急与石头分流区（regimeSpeed 高）：沿绕石势流流线拉伸的八字分流波纹；
-   * - 石后与潭湾漩涡区（vortexIntensity 高）：叠加对数螺旋旋转涡流扰动（Swirling Eddy）。
+   * 分区各向异性微表面水波梯度：
+   * - 中央平缓深潭：保持柔和微澜；
+   * - 靠近岸边（bankWaveMask）与靠近石头（splashMask / vortexMask）：叠加交织小水波与岸际反射涟漪，
+   *   使岸边与石头周围呈现水波荡漾、水光粼粼的真实激荡感。
    */
-  vec2 zonedStreamWaveGradient( vec2 xz, vec2 localFlowDir, float regimeSpeed, float splashMask, float vortexMask, float time ) {
+  vec2 zonedStreamWaveGradient( vec2 xz, vec2 localFlowDir, float regimeSpeed, float splashMask, float vortexMask, float bankWaveMask, float time ) {
     vec2 crossDir = vec2( -localFlowDir.y, localFlowDir.x );
     float sAlong = dot( xz, localFlowDir );
     float sCross = dot( xz, crossDir );
 
-    // 漩涡区螺旋坐标扭转（模拟石后卡门涡街与水湾漩涡）
     if ( vortexMask > 0.05 ) {
       float swirlPhase = time * 3.8 + length( xz ) * 8.0;
       float cSwirl = cos( swirlPhase * vortexMask );
@@ -216,21 +226,29 @@ export const WATER_FLOW_FRAG = /* glsl */ `
       sAlong = mix( sAlong, rotCoord.y, vortexMask * 0.45 );
     }
 
-    // 沿流向与横向各向异性缩放：湍急/分流段纵向拉长、横向收紧，形成真实山涧流丝而非大海波浪
+    float edgeWaveBoost = clamp( bankWaveMask * 0.85 + splashMask * 1.15 + vortexMask * 0.90, 0.0, 1.25 );
     float speedRate = time * ( 1.8 + 3.6 * regimeSpeed );
     vec2 q1 = vec2( sCross * ( 4.2 + 2.5 * regimeSpeed ), sAlong * 2.6 - speedRate );
-    vec2 q2 = vec2( sCross * 8.8 - sin( sAlong * 3.2 ) * 0.45, sAlong * 5.4 - speedRate * 1.45 );
-    vec2 q3 = vec2( sCross * 16.5 + sAlong * 6.5, sAlong * 12.8 - speedRate * 2.1 );
+    vec2 q2 = vec2( sCross * 9.6 - sin( sAlong * 3.6 - time * 2.2 ) * 0.55, sAlong * 6.2 - speedRate * 1.45 );
+    vec2 q3 = vec2( sCross * 18.0 + sin( sAlong * 8.0 - time * 4.5 ) * 0.65, sAlong * 13.5 - speedRate * 2.0 );
 
     float eps = 0.035;
-    float w1 = 0.45 * ( 0.55 + 0.45 * regimeSpeed );
-    float w2 = 0.35 * ( 0.65 + 0.65 * regimeSpeed );
-    float w3 = 0.20 * ( 0.40 + 1.25 * splashMask + 0.75 * vortexMask );
+    float w1 = 0.42 * ( 0.45 + 0.55 * regimeSpeed );
+    float w2 = 0.38 * ( 0.45 + 0.65 * regimeSpeed + 0.75 * edgeWaveBoost );
+    float w3 = 0.25 * ( 0.25 + 1.15 * edgeWaveBoost );
 
     float h0 = waterFbm( q1 ) * w1 + waterFbm( q2 ) * w2 + waterNoise( q3 ) * w3;
     float hx = waterFbm( q1 + vec2( eps, 0.0 ) ) * w1 + waterFbm( q2 + vec2( eps, 0.0 ) ) * w2 + waterNoise( q3 + vec2( eps, 0.0 ) ) * w3;
     float hz = waterFbm( q1 + vec2( 0.0, eps ) ) * w1 + waterFbm( q2 + vec2( 0.0, eps ) ) * w2 + waterNoise( q3 + vec2( 0.0, eps ) ) * w3;
-    vec2 localGrad = ( vec2( hx - h0, hz - h0 ) / eps ) * ( 0.16 + 0.18 * regimeSpeed + 0.14 * splashMask );
+
+    // 岸边与石头周围专属的干涉小水波（产生连续波脊高光，而非离散白噪点）
+    float rippleA = sin( sCross * 26.0 + sAlong * 15.0 - time * 6.8 ) * cos( sCross * 19.0 - sAlong * 21.0 - time * 5.4 );
+    vec2 edgeRippleGrad = vec2(
+      cos( sCross * 26.0 + sAlong * 15.0 - time * 6.8 ) * 0.22,
+      -sin( sCross * 19.0 - sAlong * 21.0 - time * 5.4 ) * 0.22
+    ) * edgeWaveBoost * ( 0.5 + 0.5 * rippleA );
+
+    vec2 localGrad = ( vec2( hx - h0, hz - h0 ) / eps ) * ( 0.14 + 0.18 * regimeSpeed + 0.22 * edgeWaveBoost ) + edgeRippleGrad;
     return crossDir * localGrad.x + localFlowDir * localGrad.y;
   }
 
@@ -304,12 +322,11 @@ export const WATER_FLOW_FRAG = /* glsl */ `
     vec4 sweFrag = texture2D( uSweTex, sweUv );
     vec4 hydroFrag = texture2D( uHydroTex, sweUv );
 
-    // 解码片元处的水动力学五类分区状态
     float flowDirX = hydroFrag.r * 2.0 - 1.0;
     float flowDirZ = sqrt( max( 0.05, 1.0 - flowDirX * flowDirX ) );
     vec2 localFlowDir = normalize( vec2( flowDirX, flowDirZ ) );
     vec2 localLatDir = vec2( -localFlowDir.y, localFlowDir.x );
-    float regimeSpeed = hydroFrag.g; // 平缓 vs 湍急/分流
+    float regimeSpeed = hydroFrag.g;
     float isSolidObs = step( 0.75, hydroFrag.b );
     float splashMask = clamp( hydroFrag.b / 0.65, 0.0, 1.0 ) * ( 1.0 - isSolidObs );
     float vortexMask = hydroFrag.a * ( 1.0 - isSolidObs );
@@ -318,10 +335,17 @@ export const WATER_FLOW_FRAG = /* glsl */ `
     float along = dot( p, localFlowDir );
     float lateral = dot( p, localLatDir );
 
-    // 1. 合成三维分区波浪法线（含绕石八字分流波纹、急流鱼鳞细波与石后漩涡倾角）
-    vec2 microGrad = zonedStreamWaveGradient( p, localFlowDir, regimeSpeed, splashMask, vortexMask, uTime );
+    float cx = streamApproxCenterX( p.y );
+    float bankDist = abs( p.x - cx );
+    // 识别「靠近岸边」与「靠近石头」区域：保持中央平缓清澈，岸边与石畔小水波荡漾、水光粼粼
+    float bankWaveMask = smoothstep( 0.30, 0.86, bankDist );
+    float stoneWaveMask = clamp( splashMask * 1.4 + vortexMask * 1.1 + smoothstep( 0.35, 0.75, regimeSpeed ) * 0.65, 0.0, 1.0 );
+    float nearBankOrRock = clamp( max( bankWaveMask, stoneWaveMask ), 0.0, 1.0 );
+
+    // 1. 合成三维分区波浪法线
+    vec2 microGrad = zonedStreamWaveGradient( p, localFlowDir, regimeSpeed, splashMask, vortexMask, bankWaveMask, uTime );
     vec3 sweN = length( vSweNormal ) > 0.1 ? vSweNormal : vec3( 0.0, 1.0, 0.0 );
-    vec3 nrm = normalize( normal + ( sweN - vec3( 0.0, 1.0, 0.0 ) ) * 1.45 + vec3( -microGrad.x, 0.0, -microGrad.y ) * 1.35 );
+    vec3 nrm = normalize( normal + ( sweN - vec3( 0.0, 1.0, 0.0 ) ) * 1.55 + vec3( -microGrad.x, 0.0, -microGrad.y ) * 1.45 );
     vec3 V = normalize( viewDir );
     float ndv = clamp( abs( dot( nrm, V ) ), 0.02, 1.0 );
 
@@ -346,16 +370,14 @@ export const WATER_FLOW_FRAG = /* glsl */ `
 
     // 2. 树冠遮挡阴影 vs 阳光直射窗口
     float sunWindow = canopySunWindow( worldPos, uWaterSunDir );
-    float sunLit = clamp( shadowMask * ( 0.35 + 0.65 * sunWindow ), 0.0, 1.0 );
+    float sunLit = clamp( shadowMask * ( 0.38 + 0.62 * sunWindow ), 0.0, 1.0 );
 
-    // 3. 斯涅尔光学折射：清澈透出水底石头、卵石与金褐泥沙（平缓潭水如水晶般澄澈，急流处折射随细波微颤）
-    float cx = streamApproxCenterX( p.y );
-    float bankDist = abs( p.x - cx );
+    // 3. 斯涅尔光学折射：清澈透出水底石头、卵石与金褐泥沙
     float geomDepth = clamp( 0.22 * ( 1.0 - smoothstep( 0.45, 1.38, bankDist ) ), 0.008, 0.36 );
     float waterDepth = geomDepth;
 
     vec2 screenUv = ( vWaterClipPos.xy / max( 0.0001, vWaterClipPos.w ) ) * 0.5 + 0.5;
-    vec2 refractOffset = nrm.xz * clamp( 0.015 + waterDepth * 0.075, 0.012, 0.044 );
+    vec2 refractOffset = nrm.xz * clamp( 0.015 + waterDepth * 0.075, 0.012, 0.046 );
     vec2 refractUv = clamp( screenUv - refractOffset, vec2( 0.002 ), vec2( 0.998 ) );
 
     if ( uHasRefraction > 0.5 ) {
@@ -410,55 +432,57 @@ export const WATER_FLOW_FRAG = /* glsl */ `
       }
     }
 
-    float waveFacet = smoothstep( 0.25, 0.85, vWaveCrest + dot( nrm.xz, vec2( 0.7, 0.7 ) ) * 1.4 );
-    vec3 waveReflection = rayTracedEnv * ( 0.75 + 0.48 * waveFacet ) * ( 0.68 + 0.45 * sunLit );
+    float waveFacet = smoothstep( 0.22, 0.82, vWaveCrest + dot( nrm.xz, vec2( 0.7, 0.7 ) ) * 1.55 );
+    vec3 waveReflection = rayTracedEnv * ( 0.75 + 0.52 * waveFacet ) * ( 0.68 + 0.45 * sunLit );
 
-    // 5. 阳光直射处的粼粼波光（GGX 微表面闪烁高光 Solar Glitter）
+    // 5. 连续水波荡漾的粼粼波光（顺应岸线与绕石流线的细长波脊高光，彻底消除圆点阵列感）
     vec3 L = normalize( -uWaterSunDir );
     vec3 H = normalize( V + L );
     float ndh = max( 0.0, dot( nrm, H ) );
 
-    vec2 glitterCell = floor( vec2( lateral * 20.0, along * 18.0 - uTime * ( 2.5 + 3.5 * regimeSpeed ) ) );
-    float cellSparkle = waterHash21( glitterCell );
-    vec3 sparkleNrm = normalize( nrm + vec3(
-      sin( lateral * 38.0 + uTime * 6.5 ) * 0.15,
-      0.0,
-      cos( along * 42.0 - uTime * 7.8 ) * 0.15
-    ) );
-    float sparkleNdh = max( 0.0, dot( sparkleNrm, H ) );
+    float flowWarp = waterFbm( vec2( lateral * 3.8, along * 2.2 - uTime * 1.4 ) );
+    float bankRippleWave = sin( bankDist * 34.0 - along * 6.5 - uTime * 5.2 + flowWarp * 6.0 );
+    float stoneRippleWave = sin( along * 20.0 + lateral * 8.0 - uTime * 6.8 + flowWarp * 7.5 );
+    float ribbonCrest = smoothstep( 0.62, 0.95, bankRippleWave * bankWaveMask + stoneRippleWave * stoneWaveMask * 0.85 );
 
-    float broadSpec = pow( ndh, 42.0 ) * 0.45;
-    float sharpGlint = pow( sparkleNdh, 240.0 ) * ( 1.8 + 1.6 * step( 0.62, cellSparkle ) );
-    vec3 sunGlitter = vec3( 1.0, 0.97, 0.88 ) * ( broadSpec * ( 0.18 + 0.82 * sunLit ) + sharpGlint * sunLit * 1.45 );
+    // 岸边与靠近石头处的水波荡漾波光（即使在林荫漫射光下也有灵动的清亮水波反光）
+    float bankRockShimmer = nearBankOrRock * ribbonCrest * ( 0.35 + 0.65 * pow( 1.0 - ndv, 1.8 ) );
+    float broadSpec = pow( ndh, 36.0 ) * ( 0.32 + 0.52 * nearBankOrRock );
+    float crestGlint = pow( ndh, 110.0 ) * ( 0.65 + 1.45 * ribbonCrest * nearBankOrRock );
+    vec3 sunGlitter = vec3( 0.98, 0.96, 0.90 ) * (
+      broadSpec * ( 0.25 + 0.75 * sunLit ) +
+      crestGlint * ( 0.32 + 0.68 * sunLit ) +
+      bankRockShimmer * vec3( 0.52, 0.72, 0.68 ) * ( 0.45 + 0.55 * sunLit )
+    );
 
-    // 6. 分区物理水花、分流流丝与石后漩涡纹（精准投放在对应水动力学区域，绝不糊满水面）：
+    // 6. 岸边、石头周围与小瀑布的柔和水花激荡（使用连续水纹替代颗粒噪点）：
     float slopeTilt = clamp( ( 1.0 - abs( nrm.y ) ) * 5.2, 0.0, 1.0 );
-    vec2 streamUv = vec2( lateral * 11.0 + nrm.x * 1.4, along * 6.5 - uTime * ( 2.4 + 4.2 * regimeSpeed ) );
-    float fineDroplets = smoothstep( 0.58, 0.86, waterFbm( streamUv * 1.6 ) );
+    vec2 streamUv = vec2( lateral * 10.5 + nrm.x * 1.6, along * 3.2 - uTime * ( 2.2 + 3.6 * regimeSpeed ) );
+    float smoothWash = smoothstep( 0.54, 0.86, waterFbm( streamUv ) );
 
-    // (a) 迎水激荡水花与小瀑布落水潭飞沫（splashMask 区）
-    float bowAndPlungeSplash = splashMask * ( 0.42 + 0.58 * fineDroplets ) * smoothstep( 0.12, 0.65, splashMask + slopeTilt * 0.5 );
+    // (a) 迎水激荡水枕与小瀑布落水潭柔白水花
+    float bowAndPlungeSplash = splashMask * ( 0.36 + 0.64 * smoothWash ) * smoothstep( 0.12, 0.65, splashMask + slopeTilt * 0.5 );
 
-    // (b) 石头两侧八字分流丝与急流接触圈微沫
-    float splitStreamFilaments = smoothstep( 0.48, 0.82, regimeSpeed ) * smoothstep( 0.66, 0.88, waterFbm( vec2( lateral * 16.0, along * 4.2 - uTime * 5.5 ) ) ) * 0.28;
-    float contactRing = ( 1.0 - smoothstep( 0.004, uShoreFoamThreshold * 0.52, waterDepth ) ) * smoothstep( 0.30, 0.80, agitation ) * fineDroplets * 0.62;
+    // (b) 靠近石头与岸边的细小波纹激荡水线（水波荡漾的高亮波脊）
+    float bankAndRockRipple = nearBankOrRock * ribbonCrest * ( 0.22 + 0.32 * smoothWash );
+    float contactRing = ( 1.0 - smoothstep( 0.004, uShoreFoamThreshold * 0.58, waterDepth ) ) * ( 0.32 + 0.68 * nearBankOrRock ) * smoothWash * 0.48;
 
-    // (c) 石后卡门涡街与水湾旋转涡纹（螺旋流丝）
-    float eddyAngle = atan( nrm.z, nrm.x ) + length( p ) * 12.0 - uTime * 4.5;
-    float vortexSwirl = vortexMask * smoothstep( 0.54, 0.84, sin( eddyAngle * 2.0 ) * 0.5 + 0.5 ) * fineDroplets * 0.34;
+    // (c) 石后卡门涡街与水湾旋转涡纹
+    float eddyAngle = atan( nrm.z, nrm.x ) + length( p ) * 10.0 - uTime * 4.2;
+    float vortexSwirl = vortexMask * smoothstep( 0.52, 0.84, sin( eddyAngle * 2.0 ) * 0.5 + 0.5 ) * smoothWash * 0.34;
 
-    float totalFoam = clamp( bowAndPlungeSplash * 0.78 + contactRing + splitStreamFilaments + vortexSwirl + smoothstep( 0.58, 0.92, slopeTilt ) * fineDroplets * 0.48, 0.0, 0.74 );
+    float totalFoam = clamp( bowAndPlungeSplash * 0.68 + contactRing + bankAndRockRipple + vortexSwirl + smoothstep( 0.58, 0.92, slopeTilt ) * smoothWash * 0.38, 0.0, 0.68 );
 
-    // 7. 最终水体光学合成：清澈折射河床 + 菲涅尔波光倒影（树木 & 朱红鸟居）+ 阳光粼粼波光 + 分区激荡水花/漩涡
-    float reflectMix = clamp( fresnel * ( 0.65 + 0.45 * waveFacet ) + 0.14, 0.12, 0.84 );
+    // 7. 最终水体光学合成
+    float reflectMix = clamp( fresnel * ( 0.65 + 0.45 * waveFacet ) + 0.14 + nearBankOrRock * 0.12, 0.12, 0.86 );
     vec3 surfaceCol = mix( waterBody, waveReflection, reflectMix );
     surfaceCol += sunGlitter;
-    surfaceCol = mix( surfaceCol, foamTint * ( 0.74 + 0.26 * sunLit ), totalFoam );
+    surfaceCol = mix( surfaceCol, foamTint * ( 0.76 + 0.24 * sunLit ), totalFoam );
 
-    surfaceCol *= ( 0.74 + 0.34 * sunLit );
+    surfaceCol *= ( 0.76 + 0.32 * sunLit );
 
     float edgeFade = 1.0 - smoothstep( 1.18, 1.48, bankDist );
-    float glintAlpha = clamp( dot( sunGlitter, vec3( 0.333 ) ) * 0.45, 0.0, 0.35 );
+    float glintAlpha = clamp( dot( sunGlitter, vec3( 0.333 ) ) * 0.48, 0.0, 0.36 );
     float clearAlpha = uHasRefraction > 0.5
       ? clamp( ( 0.46 + extinction * 0.22 + fresnel * 0.32 + totalFoam * 0.28 + glintAlpha ) * edgeFade, 0.18, 0.88 )
       : clamp( ( 0.24 + extinction * 0.24 + fresnel * 0.42 + totalFoam * 0.36 + glintAlpha ) * edgeFade, 0.12, 0.78 );

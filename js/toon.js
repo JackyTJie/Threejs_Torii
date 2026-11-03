@@ -146,7 +146,12 @@ export function applyWeathering(material, {
     uDustAmount: { value: dustAmount },
     uRoughnessVar: { value: roughnessVar },
     uToriiMode: { value: toriiMode },
-    uSpecSunDir: { value: sunDirectionVector() }
+    uSpecSunDir: { value: sunDirectionVector() },
+    uWeatherTime: { value: 0.0 },
+    uWeatherWetness: { value: 0.22 },
+    uLanternIntensity: { value: 0.42 },
+    uLanternPosL: { value: new THREE.Vector3(-1.35, 5.42, -0.02) },
+    uLanternPosR: { value: new THREE.Vector3(1.89, 5.42, -0.02) }
   });
   composeBeforeCompile(material, (shader) => {
     Object.assign(shader.uniforms, uniforms);

@@ -1,8 +1,8 @@
 // 入口：全工程唯一使用 requestAnimationFrame 的模块。
 //
 // 这里负责：建渲染器 / 场景 / 相机 / 灯光，把资产交给 scene-assembly 组装，
-// 挂载水面屏幕射线实时物理交互波纹、动态昼夜切换系统与右下角圆球形设置图标面板，
-// 然后每帧按固定顺序推进：相机 → 昼夜与动态效果 → 后处理（含 SWE GPU Ping-Pong、SSAO、分层高度雾、鸟居景深 DOF 与辉光）。
+// 挂载水面屏幕射线实时物理交互波纹、全天时瑞利大气昼夜系统、可切换气象系统彩蛋与右下角青绿色圆球形控制面板，
+// 然后每帧按固定顺序推进：相机 → 昼夜与气象系统 → 动态效果 → 后处理（含 SWE GPU Ping-Pong、瑞利天空与5层远山、SSAO、3D体积雾、丁达尔体积光、鸟居景深 DOF 与辉光）。
 import * as THREE from 'three';
 import { createRenderer, resizeRenderer, drawingBufferSize } from './renderer.js';
 import { createScene } from './scene.js';
@@ -16,6 +16,7 @@ import { animationElapsed, stepAnimations } from './animations/registry.js';
 import { streamBankHalf, streamCenterX, waterY } from './layout.js';
 import { getSweSimulator } from './water/swe-simulator.js';
 import { createDayNightSystem } from './day-night.js';
+import { createWeatherSystem } from './weather.js';
 import { createSettingsPanel } from './ui-panel.js';
 
 /** 单帧最大步长：切后台 / 断点回来不补算大跳帧 */
@@ -37,14 +38,16 @@ export function createApp(canvas, options = {}) {
   const post = createPostPipeline(renderer, scene, camera);
   const swe = getSweSimulator();
   const dayNight = createDayNightSystem({ scene, lighting, post });
+  const weather = createWeatherSystem({ scene, post, swe });
   const ui = options.ui === false ? null : createSettingsPanel({
     post,
     lighting,
     dayNight,
+    weather,
     animations: assembly.animations
   });
 
-  // 阶段一.3：屏幕射线步进（Raycasting）交互输入机制 —— 将指针位置反投影为三维视线并与山涧曲面求交，写入 SWE 高度增量
+  // 屏幕射线步进（Raycasting）交互输入机制 —— 将指针位置反投影为三维视线并与山涧曲面求交，写入 SWE 高度增量
   const rayDir = new THREE.Vector3();
   const camRight = new THREE.Vector3();
   const camUp = new THREE.Vector3();
@@ -75,7 +78,6 @@ export function createApp(canvas, options = {}) {
     const oy = camera.position.y;
     const oz = camera.position.z;
 
-    // 沿视线快速求交山涧水面高度场 y = waterY(z)
     let t = (1.2 - oy) / rayDir.y;
     for (let iter = 0; iter < 5; iter++) {
       const hz = oz + rayDir.z * t;
@@ -131,12 +133,13 @@ export function createApp(canvas, options = {}) {
     // 1) 受限观景相机（阻尼 / 缩放耦合注视点 / 后退防超模硬锁 / 防穿地保护）
     rig.update(seconds);
 
-    // 2) 动态昼夜流转（若开启自动流转）与微风枝叶/纸垂摇曳、溪流 SWE 与漂浮落叶、积水微澜、薄雾漂移
+    // 2) 动态昼夜流转、气象系统（细雨粒子/地面涟漪/湿润度）与场景动画推进
     dayNight.step(seconds);
     const stepped = stepAnimations(seconds);
     if (stepped.errors.length) console.error('[animations]', stepped.errors.join(' | '));
+    weather.step(seconds, animationElapsed());
 
-    // 3) 后处理：SWE 物理迭代 → 河床深度折射通道 → SSAO 与分层动态高度雾 → 描边深度边缘 → 鸟居景深 DOF → 辉光 → 合成 → 调色
+    // 3) 后处理：SWE 物理迭代 → 河床深度折射通道 → 瑞利天空/5层远山/SSAO/3D体积雾/丁达尔体积光 → 描边 → 景深 DOF → 辉光 → 合成 → 调色
     post.render(animationElapsed());
     frames += 1;
   }
@@ -177,6 +180,7 @@ export function createApp(canvas, options = {}) {
     post,
     swe,
     dayNight,
+    weather,
     ui,
     assets: assembly.assets,
     animations: assembly.animations,

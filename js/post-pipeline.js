@@ -1,9 +1,11 @@
-// 后处理管线：SSAO 环境光遮蔽 + 分层动态高度雾 → 描边（反向壳体 + 深度边缘）→ 鸟居焦点景深 DOF → Bloom 辉光 → 合成 → 电影级调色
-// 全部为离屏 pass，支持昼夜循环与设置面板实时无级调参。
+// 后处理管线：瑞利大气天空 + 5层视差远山 + SSAO 环境光遮蔽 + 3D 体积雾 + 林间丁达尔体积光（God Ray）
+// → 描边（反向壳体 + 深度边缘）→ 鸟居焦点景深 DOF → Bloom 辉光 → 合成 → 电影级调色
 import * as THREE from 'three';
-import { POST, PALETTE, OUTLINE } from './config.js';
+import { POST, PALETTE, OUTLINE, LIGHT } from './config.js';
 import { configuredToneMapping } from './renderer.js';
 import { DOF_FOCUS } from './layout.js';
+import { getShrineLanternWorldPositions } from './assets/torii.js';
+import { sunDirection } from './lighting.js';
 import { QUAD_VS, EDGE_FS } from './shaders/outline-shader.js';
 import { setOutlineDistanceRange } from './outline.js';
 import { SSAO_FOG_FS } from './shaders/ssao-shader.js';
@@ -30,10 +32,15 @@ export function createPostPipeline(renderer, scene, camera) {
   const passes = {};
   let dofUniforms = null;
 
-  /** 景深焦点：画面中心朱红鸟居（相机环绕 / 缩放时始终对焦于红色鸟居主体） */
   const focusPoint = new THREE.Vector3(DOF_FOCUS.x, DOF_FOCUS.y, DOF_FOCUS.z);
+  const lanternPositions = getShrineLanternWorldPositions();
+  const lanternPosL = lanternPositions[0]
+    ? new THREE.Vector3(lanternPositions[0].x, lanternPositions[0].y, lanternPositions[0].z)
+    : new THREE.Vector3(-1.35, 5.42, -0.02);
+  const lanternPosR = lanternPositions[1]
+    ? new THREE.Vector3(lanternPositions[1].x, lanternPositions[1].y, lanternPositions[1].z)
+    : new THREE.Vector3(1.89, 5.42, -0.02);
 
-  /** 最大弥散半径按实际画面高度缩放，保证 1080p 与 4K 得到同样的观感 */
   function dofMaxBlurPx() {
     return Math.max(0, POST.dof.maxBlurPx * state.dofScale * (height / 1080));
   }
@@ -73,6 +80,14 @@ export function createPostPipeline(renderer, scene, camera) {
     focusDistance: POST.dof.focusDistance,
     followFocusTarget: POST.dof.followFocusTarget,
     dofScale: 1.0,
+    godRayStrength: 1.0,
+    weatherMode: 0.0,
+    dayHour: 10.5,
+    moonPhase: 0.88,
+    lanternIntensity: 0.42,
+    sunDir: sunDirection(),
+    sunColor: new THREE.Color(LIGHT.sunColor),
+    sunIntensity: LIGHT.sunIntensity,
     enabled: POST.enabled,
     frames: 0
   };
@@ -93,7 +108,7 @@ export function createPostPipeline(renderer, scene, camera) {
     targets.blurB = makeTarget(halfW, halfH, false);
     targets.composite = makeTarget(width, height, false);
 
-    // 1) SSAO 环境光遮蔽 + 世界空间分层流动高度雾
+    // 1) 瑞利大气天空 + 5层视差远山 + SSAO + 3D 体积雾 + 林间丁达尔体积光束
     passes.ssaoFog = makePass(SSAO_FOG_FS, {
       tScene: { value: null },
       tDepth: { value: null },
@@ -118,7 +133,17 @@ export function createPostPipeline(renderer, scene, camera) {
       uFogHeightFalloff: { value: POST.heightFog.heightFalloff },
       uFogSpeed: { value: POST.heightFog.speed },
       uFogNoiseAmp: { value: POST.heightFog.noiseAmp },
-      uTime: { value: 0 }
+      uTime: { value: 0 },
+      uDayHour: { value: state.dayHour },
+      uSunDir: { value: state.sunDir.clone() },
+      uSunColor: { value: state.sunColor.clone() },
+      uSunIntensity: { value: state.sunIntensity },
+      uGodRayStrength: { value: state.godRayStrength },
+      uLanternIntensity: { value: state.lanternIntensity },
+      uLanternPosL: { value: lanternPosL.clone() },
+      uLanternPosR: { value: lanternPosR.clone() },
+      uWeatherMode: { value: state.weatherMode },
+      uMoonPhase: { value: state.moonPhase }
     });
 
     // 2) 深度边缘描边
@@ -205,7 +230,6 @@ export function createPostPipeline(renderer, scene, camera) {
     height = Math.max(1, Math.floor(size.y * pr));
   }
 
-  /** 焦平面到相机的距离：默认锁画面中心朱红鸟居；关掉跟随时用手动值 */
   function focusDistanceFor(cam) {
     if (!state.followFocusTarget) return state.focusDistance;
     return Math.max(0.1, cam.position.distanceTo(focusPoint));
@@ -230,10 +254,6 @@ export function createPostPipeline(renderer, scene, camera) {
     renderer.toneMappingExposure = previousExposure;
   }
 
-  /**
-   * 渲染一帧。
-   * @param {number} elapsed 累计时间（秒）
-   */
   function render(elapsed) {
     if (!state.enabled) {
       renderDirect();
@@ -241,7 +261,6 @@ export function createPostPipeline(renderer, scene, camera) {
     }
 
     try {
-      // 0) 推进 GPU 浅水方程（SWE）Ping-Pong 迭代 + 捕获水下河床深度折射与平面镜面反射缓冲
       const swe = getSweSimulator();
       swe.resizeRefraction(width, height);
       const sweTex = swe.step(renderer, elapsed);
@@ -261,7 +280,6 @@ export function createPostPipeline(renderer, scene, camera) {
         tuneMaterial(mat, 'uSweTex', sweTex);
       }
 
-      // 1) 场景 → 带深度的离屏缓冲
       renderer.setRenderTarget(targets.scene);
       renderer.clear();
       renderer.render(scene, camera);
@@ -269,7 +287,6 @@ export function createPostPipeline(renderer, scene, camera) {
       const near = camera.near;
       const far = camera.far;
 
-      // 2) SSAO 环境光遮蔽 + 世界空间分层流动高度雾
       camera.updateMatrixWorld();
       const sfU = passes.ssaoFog.material.uniforms;
       sfU.tScene.value = targets.scene.texture;
@@ -283,7 +300,6 @@ export function createPostPipeline(renderer, scene, camera) {
       sfU.uTime.value = elapsed;
       blit(passes.ssaoFog, targets.ssaoFog);
 
-      // 3) 深度边缘描边
       if (POST.outline.enabled) {
         passes.edge.material.uniforms.tScene.value = targets.ssaoFog.texture;
         passes.edge.material.uniforms.tDepth.value = targets.scene.depthTexture;
@@ -294,7 +310,6 @@ export function createPostPipeline(renderer, scene, camera) {
 
       const sharpSource = POST.outline.enabled ? targets.edge.texture : targets.ssaoFog.texture;
 
-      // 4) 景深（焦点锁定在中心红色鸟居）：横向 gather → 纵向 gather → 锐 / 糊按 CoC 混合
       const dofActive = POST.dof.enabled && state.dofScale > 0.01;
       if (dofActive) {
         const u = dofUniforms;
@@ -318,7 +333,6 @@ export function createPostPipeline(renderer, scene, camera) {
 
       const preBloomTex = dofActive ? targets.dof.texture : sharpSource;
 
-      // 5) Bloom 辉光
       if (POST.bloom.enabled) {
         passes.bright.material.uniforms.tScene.value = preBloomTex;
         blit(passes.bright, targets.bright);
@@ -330,13 +344,11 @@ export function createPostPipeline(renderer, scene, camera) {
         blit(passes.blurB, targets.blurB);
       }
 
-      // 6) 合成
       passes.composite.material.uniforms.tScene.value = preBloomTex;
       passes.composite.material.uniforms.tBloom.value = POST.bloom.enabled ? targets.blurB.texture : null;
       passes.composite.material.uniforms.uBloomStrength.value = POST.bloom.enabled ? POST.bloom.strength : 0;
       blit(passes.composite, targets.composite);
 
-      // 7) 调色 → 屏幕
       passes.grade.material.uniforms.tScene.value = targets.composite.texture;
       passes.grade.material.uniforms.uTime.value = elapsed;
       blit(passes.grade, null);
@@ -398,6 +410,44 @@ export function createPostPipeline(renderer, scene, camera) {
         POST.heightFog.sunTint = sunTint;
         passes.ssaoFog.material.uniforms.uFogSunTint.value.set(sunTint);
       }
+    },
+    setAtmosphereState({ hour, sunDir, sunColor, sunIntensity, moonPhase, lanternIntensity }) {
+      const sfU = passes.ssaoFog.material.uniforms;
+      if (hour !== undefined) {
+        state.dayHour = hour;
+        sfU.uDayHour.value = hour;
+      }
+      if (sunDir) {
+        state.sunDir.copy(sunDir);
+        sfU.uSunDir.value.copy(sunDir);
+      }
+      if (sunColor !== undefined) {
+        state.sunColor.set(sunColor);
+        sfU.uSunColor.value.set(sunColor);
+      }
+      if (sunIntensity !== undefined) {
+        state.sunIntensity = sunIntensity;
+        sfU.uSunIntensity.value = sunIntensity;
+      }
+      if (moonPhase !== undefined) {
+        state.moonPhase = moonPhase;
+        sfU.uMoonPhase.value = moonPhase;
+      }
+      if (lanternIntensity !== undefined) {
+        state.lanternIntensity = lanternIntensity;
+        sfU.uLanternIntensity.value = lanternIntensity;
+      }
+    },
+    setGodRayStrength(v) {
+      state.godRayStrength = Math.max(0, v);
+      passes.ssaoFog.material.uniforms.uGodRayStrength.value = state.godRayStrength;
+    },
+    getGodRayStrength() {
+      return state.godRayStrength;
+    },
+    setWeatherMode(code) {
+      state.weatherMode = Number(code) || 0;
+      passes.ssaoFog.material.uniforms.uWeatherMode.value = state.weatherMode;
     },
     setDofScale(v) {
       state.dofScale = Math.max(0, v);
