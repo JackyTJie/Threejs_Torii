@@ -59,34 +59,44 @@ function buildLeftCurbWall(M, rand) {
 
   for (let i = 0; i < blocks; i++) {
     const z0 = zStart - i * span;
-    const z1 = z0 - span + 0.025;
-    const zc = (z0 + z1) * 0.5;
+    const z1 = z0 - span + 0.04;
+    const zc = (z0 + z1) * 0.5 + (rand() - 0.5) * 0.04;
     const { x0 } = pathBoundsAt(zc);
-    const curbX = x0 + CURB_OFFSET;
-    const yaw = pathYaw(zc) * 0.45;
-    const rampTop = zc <= PATH.zBottom ? pathRampY(zc) + 0.16 : PATH.bottomY + 0.08;
+    const curbX = x0 + CURB_OFFSET + (rand() - 0.5) * 0.04;
+    const yaw = pathYaw(zc) * 0.45 + (rand() - 0.5) * 0.22;
+    const rampTop = zc <= PATH.zBottom ? pathRampY(zc) + 0.06 : PATH.bottomY + 0.04;
     const outerGround = terrainHeight(curbX - 0.22, zc);
-    const height = Math.max(0.32, rampTop - outerGround + 0.24);
-    const halfX = CURB_WIDTH * 0.5 * (0.92 + rand() * 0.18);
-    const halfZ = (span - 0.025) * 0.5;
+    const height = Math.max(0.24, rampTop - outerGround + 0.16);
+    const radius = 0.22 + (rand() - 0.5) * 0.05;
 
-    const geo = slabGeometry(curbRing(halfX, halfZ), height);
+    // 千年风化圆润溪岸路缘垒石（采用浑圆不规则 rockGeometry 替代机械直棱方砖）
+    const geo = rockGeometry(radius, 8300 + i * 37, {
+      widthSegments: 12,
+      heightSegments: 9,
+      wobble: 0.26,
+      flatten: 0.58
+    });
     triplanarUv(geo, 0.85, [curbX, rampTop, zc]);
-    const mat = rand() < 0.36 ? M.mossStone : rand() < 0.72 ? M.stoneStepLower : M.stoneStepMid;
+    const mat = rand() < 0.28 ? (M.stoneRockMossy || M.stoneStepLower) : rand() < 0.68 ? M.stoneStepLower : M.stoneStepMid;
     const block = mesh(geo, mat, `curbStone-${i + 1}`);
     place(block, {
-      x: curbX + (rand() - 0.5) * 0.02,
-      y: rampTop + (rand() - 0.5) * 0.008,
+      x: curbX,
+      y: rampTop - height * 0.28 + (rand() - 0.5) * 0.018,
       z: zc,
-      ry: yaw + (rand() - 0.5) * 0.025
+      ry: yaw,
+      sx: 0.72 + rand() * 0.24,
+      sy: Math.max(0.55, height / (radius * 1.5)),
+      sz: 1.15 + rand() * 0.32
     });
+    block.rotation.x = (rand() - 0.5) * 0.08;
+    block.rotation.z = (rand() - 0.5) * 0.08;
     block.castShadow = true;
     block.receiveShadow = true;
     g.add(block);
     count += 1;
   }
 
-  // 下段近景平台延伸石板（随弯曲参道底端延伸 z ∈ [11.6, 14.0]）
+  // 下段近景平台延伸古石板（采用圆润风化扁平卵石块，消除直棱方盒感）
   const apronRows = 5;
   for (let r = 0; r < apronRows; r++) {
     const zc = PATH.zBottom + 0.28 + r * 0.5;
@@ -98,10 +108,23 @@ function buildLeftCurbWall(M, rand) {
       const xb = (s === 0 ? pathCx - 0.05 : x1) + shiftOut;
       const cx = (xa + xb) * 0.5;
       const hw = (xb - xa) * 0.5;
-      const geo = slabGeometry(curbRing(hw, 0.23), 0.18);
+      const geo = rockGeometry(hw * 0.85, 8900 + r * 29 + s * 11, {
+        widthSegments: 14,
+        heightSegments: 9,
+        wobble: 0.18,
+        flatten: 0.24
+      });
       triplanarUv(geo, 1.1, [cx, top, zc]);
       const slab = mesh(geo, (r + s) % 2 === 0 ? M.stoneStepLower : M.stoneStepMid, `apronSlab-${r}-${s}`);
-      place(slab, { x: cx, y: top, z: zc, ry: pathYaw(PATH.zBottom) * 0.35 });
+      place(slab, {
+        x: cx,
+        y: top - 0.05,
+        z: zc,
+        ry: pathYaw(PATH.zBottom) * 0.35 + (rand() - 0.5) * 0.06,
+        sx: 1.12,
+        sy: 0.42,
+        sz: 0.44
+      });
       slab.castShadow = true;
       slab.receiveShadow = true;
       g.add(slab);
@@ -317,26 +340,26 @@ function buildForegroundFramingBranches(M, rand) {
   const backMats = [M.leafSheetMaple, M.leafSheetEvergreenLight, M.leafSheetMapleDeep, M.leafSheetSakaki];
 
   const framingSpecs = [
-    // 左前景高枝（抬高至 y ≈ 3.5，不遮挡左下方蜿蜒叠瀑溪流视线）
+    // 左前景高枝（短枝隐藏于叶簇内部，绝不拉出横跨画面的直线长杆）
     {
       name: 'frame-left-low',
       mats: darkFrameMats,
-      origin: [-5.6, 3.3, 7.6],
-      mid: [-4.4, 3.5, 7.0],
-      tip: [-3.4, 3.6, 6.5],
+      origin: [-5.1, 3.38, 7.35],
+      mid: [-4.45, 3.48, 7.02],
+      tip: [-3.95, 3.55, 6.75],
       clusters: [
         { pos: [-5.0, 3.4, 7.3], r: 0.68, leaves: [78, 98] },
         { pos: [-4.1, 3.55, 6.8], r: 0.64, leaves: [74, 92] },
         { pos: [-3.4, 3.6, 6.5], r: 0.52, leaves: [60, 76] }
       ]
     },
-    // 左中景主画框枝（自左坡探向鸟居左柱下半部 x ≈ -1.05，完美复现参考图左侧深绿枝叶画框）
+    // 左中景主画框枝（短枝隐于叶簇内，不伸出裸露长木杆）
     {
       name: 'frame-left-mid',
       mats: darkFrameMats,
-      origin: [-3.8, 3.3, 4.2],
-      mid: [-2.3, 3.75, 3.6],
-      tip: [-1.05, 4.0, 3.2],
+      origin: [-3.35, 3.42, 4.02],
+      mid: [-2.65, 3.66, 3.72],
+      tip: [-2.05, 3.84, 3.48],
       clusters: [
         { pos: [-3.3, 3.45, 4.0], r: 0.76, leaves: [88, 110] },
         { pos: [-2.35, 3.75, 3.6], r: 0.72, leaves: [84, 106] },
@@ -344,13 +367,13 @@ function buildForegroundFramingBranches(M, rand) {
         { pos: [-1.05, 4.02, 3.15], r: 0.52, leaves: [62, 80] }
       ]
     },
-    // 左侧深林山脊封口（延伸至 x = -11，彻底封堵 16:9 宽屏左侧与左中景的一切空白）
+    // 左侧深林山脊封口（短枝完全包裹在浓密树冠内，消除横跨画面的斜向直杆）
     {
       name: 'frame-left-canopy-wall',
       mats: frameMats,
-      origin: [-8.5, 4.2, -1.5],
-      mid: [-5.2, 5.4, -0.2],
-      tip: [-2.1, 6.2, 0.5],
+      origin: [-7.6, 4.3, 1.6],
+      mid: [-6.8, 4.6, 1.3],
+      tip: [-6.0, 4.8, 1.0],
       clusters: [
         { pos: [-9.2, 4.5, 2.5], r: 1.25, leaves: [120, 150] },
         { pos: [-7.4, 4.2, 1.8], r: 1.2, leaves: [115, 145] },
@@ -369,26 +392,26 @@ function buildForegroundFramingBranches(M, rand) {
         { pos: [-2.7, 7.5, -0.3], r: 0.96, leaves: [98, 124] }
       ]
     },
-    // 左上角垂枝画框
+    // 左上角垂枝画框（短枝深藏于叶簇中）
     {
       name: 'frame-left-high',
       mats: darkFrameMats,
-      origin: [-4.2, 6.4, 4.6],
-      mid: [-2.6, 6.1, 4.1],
-      tip: [-1.35, 5.85, 3.8],
+      origin: [-3.5, 6.32, 4.42],
+      mid: [-2.85, 6.18, 4.18],
+      tip: [-2.25, 6.05, 4.0],
       clusters: [
         { pos: [-3.4, 6.3, 4.4], r: 0.78, leaves: [86, 108] },
         { pos: [-2.2, 6.05, 4.0], r: 0.72, leaves: [80, 100] },
         { pos: [-1.35, 5.85, 3.8], r: 0.58, leaves: [64, 82] }
       ]
     },
-    // 右侧山坡凸出林冠（位于 z ≈ -1.5..4.5, x > 1.75，上段山路在 z < -4.4 处向右弯曲绕至这片山林后方消失！）
+    // 右侧山坡凸出林冠
     {
       name: 'frame-right-mid',
       mats: darkFrameMats,
-      origin: [3.6, 3.8, 5.2],
-      mid: [2.5, 4.1, 4.6],
-      tip: [1.75, 4.25, 4.2],
+      origin: [3.1, 3.92, 5.0],
+      mid: [2.6, 4.05, 4.72],
+      tip: [2.15, 4.16, 4.48],
       clusters: [
         { pos: [2.9, 3.95, 4.9], r: 0.74, leaves: [84, 106] },
         { pos: [2.0, 4.18, 4.4], r: 0.62, leaves: [70, 88] },
@@ -400,9 +423,9 @@ function buildForegroundFramingBranches(M, rand) {
     {
       name: 'frame-right-high',
       mats: frameMats,
-      origin: [5.2, 5.8, 2.2],
-      mid: [3.2, 6.6, 1.0],
-      tip: [1.75, 7.2, 0.2],
+      origin: [3.3, 5.85, 2.05],
+      mid: [2.75, 6.1, 1.75],
+      tip: [2.25, 6.3, 1.5],
       clusters: [
         { pos: [3.1, 5.8, 2.0], r: 0.88, leaves: [94, 118] },
         { pos: [2.05, 5.7, 1.5], r: 0.76, leaves: [80, 100] },
@@ -414,13 +437,13 @@ function buildForegroundFramingBranches(M, rand) {
         { pos: [7.2, 7.2, 0.5], r: 1.22, leaves: [118, 146] }
       ]
     },
-    // 鸟居正后方与上段弯曲山路内外的幽深远山林冠（既露出向右蜿蜒消失的上段石板路，又封住远方地平线）
+    // 鸟居正后方与上段弯曲山路内外的幽深远山林冠
     {
       name: 'frame-upper-back-left',
       mats: backMats,
-      origin: [-3.2, 5.5, -6.2],
-      mid: [-1.6, 6.2, -7.8],
-      tip: [-0.2, 6.8, -9.2],
+      origin: [-2.4, 5.4, -5.8],
+      mid: [-1.8, 5.75, -6.6],
+      tip: [-1.2, 6.0, -7.3],
       clusters: [
         { pos: [-2.4, 5.4, -5.8], r: 0.9, leaves: [90, 112] },
         { pos: [-1.4, 5.9, -7.2], r: 0.92, leaves: [92, 116] },
@@ -431,9 +454,9 @@ function buildForegroundFramingBranches(M, rand) {
     {
       name: 'frame-upper-back-right',
       mats: backMats,
-      origin: [5.8, 6.4, -8.2],
-      mid: [4.2, 7.0, -9.4],
-      tip: [2.4, 7.4, -10.2],
+      origin: [5.3, 6.5, -8.4],
+      mid: [4.5, 6.75, -9.0],
+      tip: [3.8, 6.95, -9.4],
       clusters: [
         { pos: [5.4, 6.5, -8.4], r: 0.98, leaves: [98, 124] },
         { pos: [3.8, 6.9, -9.4], r: 0.98, leaves: [98, 124] },

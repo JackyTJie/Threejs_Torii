@@ -248,6 +248,7 @@ export function createPostPipeline(renderer, scene, camera) {
       const hasRefract = swe.captureRefraction(renderer, scene, camera);
       for (const mat of WATER_FLOW_MATERIALS) {
         tuneMaterial(mat, 'uSweTex', sweTex);
+        tuneMaterial(mat, 'uHydroTex', swe.obstacleTex);
         tuneMaterial(mat, 'tRefractionColor', swe.refractionColorTex);
         tuneMaterial(mat, 'tRefractionDepth', swe.refractionDepthTex);
         tuneMaterial(mat, 'tReflectionColor', swe.reflectionColorTex);

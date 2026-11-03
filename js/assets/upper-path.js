@@ -5,41 +5,18 @@
  * 顺着右侧山坡大弧度向右后方蜿蜒爬升，在 z ≈ -9.2（x ≈ +5.5）处自然绕到右侧密林山坡背后隐没。
  */
 import { PATH, clamp, lerp, pathBoundsAt, pathRampY, pathYaw, terrainHeight } from '../layout.js';
-import { group, mesh, place, rng, slabGeometry, triplanarUv } from '../primitives.js';
+import { group, mesh, place, rng, rockGeometry, triplanarUv } from '../primitives.js';
 
 const UV_TILE = 1.15;
 const ROW_DEPTH = [0.42, 0.58];
-const JOINT_GAP = [0.02, 0.05];
-const CHAMFER = [0.03, 0.09];
-const TILT_JITTER = 0.012;
+const JOINT_GAP = [0.03, 0.065];
+const TILT_JITTER = 0.016;
 const JITTER_UP = 0.014;
 const WET_ODDS = 0.36;
 const MISSING_ODDS = 0.08;
 const KERB_ODDS = 0.48;
 
 const SLOPE_TILT = Math.atan(PATH.grade);
-
-function flagRing(halfX, halfZ, rand) {
-  const c = [[-halfX, halfZ], [halfX, halfZ], [halfX, -halfZ], [-halfX, -halfZ]];
-  const ring = [];
-  for (let i = 0; i < 4; i++) {
-    const p = c[i];
-    const prev = c[(i + 3) % 4];
-    const next = c[(i + 1) % 4];
-    if (rand() > 0.66) {
-      ring.push(p);
-      continue;
-    }
-    const base = lerp(CHAMFER[0], CHAMFER[1], rand());
-    const lp = Math.hypot(prev[0] - p[0], prev[1] - p[1]);
-    const ln = Math.hypot(next[0] - p[0], next[1] - p[1]);
-    const dp = clamp(base * lerp(0.5, 1.2, rand()), 0.02, 0.38 * lp);
-    const dn = clamp(base * lerp(0.5, 1.2, rand()), 0.02, 0.38 * ln);
-    ring.push([p[0] + ((prev[0] - p[0]) * dp) / lp, p[1] + ((prev[1] - p[1]) * dp) / lp]);
-    ring.push([p[0] + ((next[0] - p[0]) * dn) / ln, p[1] + ((next[1] - p[1]) * dn) / ln]);
-  }
-  return ring;
-}
 
 function rowSplits(rand, count, zCentre, narrowFactor) {
   const gaps = [];
@@ -82,7 +59,7 @@ export function createUpperPath(M, options = {}) {
     // 越往山后绕行，石板路略微收窄并自然隐入密林
     const narrowFactor = lerp(1.0, 0.78, progress);
     const yaw = pathYaw(zCentre) * 0.55;
-    const count = rand() < 0.45 ? 3 : 2;
+    const count = rand() < 0.55 ? 3 : 2;
     const spans = rowSplits(rand, count, zCentre, narrowFactor);
 
     for (let j = 0; j < spans.length; j++) {
@@ -90,15 +67,29 @@ export function createUpperPath(M, options = {}) {
       const [xa, xb] = spans[j];
       const cx = (xa + xb) / 2;
       const halfX = (xb - xa) / 2;
-      const thickness = 0.16 + rand() * 0.05;
-      const topY = Math.max(pathRampY(zCentre), terrainHeight(cx, zCentre)) + 0.025 + rand() * JITTER_UP;
+      const topY = Math.max(pathRampY(zCentre), terrainHeight(cx, zCentre)) + 0.02 + rand() * JITTER_UP;
+      // 采用圆润风化的千年不规则山石板代替机械棱角方板
+      const baseR = Math.max(0.18, Math.min(halfX, depth * 0.5));
       const geo = triplanarUv(
-        slabGeometry(flagRing(halfX, depth / 2, rand), thickness),
+        rockGeometry(baseR, 7100 + row * 41 + j * 13, {
+          widthSegments: 14,
+          heightSegments: 9,
+          wobble: 0.22,
+          flatten: 0.32
+        }),
         UV_TILE,
         [cx, topY, zCentre]
       );
       const flag = mesh(geo, rand() < WET_ODDS ? M.stoneStepWet : M.stoneSlab, `upperFlag-${row}-${j}`);
-      place(flag, { x: cx, y: topY, z: zCentre, ry: yaw });
+      place(flag, {
+        x: cx,
+        y: topY - baseR * 0.24,
+        z: zCentre,
+        ry: yaw + lerp(-0.08, 0.08, rand()),
+        sx: halfX / baseR,
+        sy: 0.42,
+        sz: (depth * 0.48) / baseR
+      });
       flag.rotation.x = SLOPE_TILT + lerp(-TILT_JITTER, TILT_JITTER, rand());
       flag.castShadow = true;
       flag.receiveShadow = true;
@@ -110,13 +101,29 @@ export function createUpperPath(M, options = {}) {
     if (rand() < KERB_ODDS) {
       const { cx } = pathBoundsAt(zCentre);
       const halfW = PATH.halfWidth * narrowFactor;
-      const side = rand() < 0.55 ? cx - halfW - 0.12 : cx + halfW + 0.12;
-      const halfX = 0.1 + rand() * 0.08;
-      const thickness = 0.12 + rand() * 0.06;
-      const kerbY = Math.max(pathRampY(zCentre), terrainHeight(side, zCentre)) + 0.035;
-      const geo = triplanarUv(slabGeometry(flagRing(halfX, depth * 0.42, rand), thickness), 0.6, [side, kerbY, zCentre]);
-      const kerb = mesh(geo, M.mossStone, `upperKerb-${row}`);
-      place(kerb, { x: side, y: kerbY, z: zCentre, ry: yaw + lerp(-0.18, 0.18, rand()) });
+      const side = rand() < 0.55 ? cx - halfW - 0.14 : cx + halfW + 0.14;
+      const rKerb = 0.14 + rand() * 0.06;
+      const kerbY = Math.max(pathRampY(zCentre), terrainHeight(side, zCentre)) + 0.01;
+      const geo = triplanarUv(
+        rockGeometry(rKerb, 7600 + row * 53, {
+          widthSegments: 12,
+          heightSegments: 8,
+          wobble: 0.26,
+          flatten: 0.52
+        }),
+        0.6,
+        [side, kerbY, zCentre]
+      );
+      const kerb = mesh(geo, M.stoneRockMossy || M.stoneStepUpper, `upperKerb-${row}`);
+      place(kerb, {
+        x: side,
+        y: kerbY,
+        z: zCentre,
+        ry: yaw + lerp(-0.24, 0.24, rand()),
+        sx: 0.85 + rand() * 0.25,
+        sy: 0.65,
+        sz: 1.15 + rand() * 0.30
+      });
       kerb.rotation.x = SLOPE_TILT;
       kerb.castShadow = true;
       kerb.receiveShadow = true;

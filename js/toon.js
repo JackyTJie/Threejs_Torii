@@ -74,7 +74,6 @@ export function tuneMaterial(material, key, value) {
   return true;
 }
 
-/** 收集所有挂有光照方向 uniform 的材质，供昼夜切换系统实时同步主光源方向与色温 */
 export const SUN_LINKED_MATERIALS = [];
 
 function registerSunMaterial(material) {
@@ -271,6 +270,7 @@ export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength
     uOverlayMode: { value: overlayMode },
     uWaterSunDir: { value: sun.clone() },
     uSweTex: { value: sim.texture },
+    uHydroTex: { value: sim.obstacleTex },
     uSweDomainMin: { value: new THREE.Vector2(SWE_DOMAIN.xMin, SWE_DOMAIN.zMin) },
     uSweDomainMax: { value: new THREE.Vector2(SWE_DOMAIN.xMax, SWE_DOMAIN.zMax) },
     uSweTexel: { value: new THREE.Vector2(1 / SWE_TEX_WIDTH, 1 / SWE_TEX_HEIGHT) },

@@ -1,14 +1,15 @@
-// 山涧溪流动态（三维真实起伏波场 + 障碍物迎水弓形激波/背水涡街 + 溪面漂浮落叶随波起伏与漂流）：
-// 1) 推进 WATER_FLOW_MATERIALS 与 RIVERBED_CAUSTIC_MATERIALS 的时间 uniform，驱动 GPU 浅水方程、斯涅尔折射、光追倒影与阳光波光；
-// 2) 水面高密度顶点三维动态起伏（主顺流行波 + 交叉斜波 + 溪石/堰石迎水驻波抬升与背水 V 型尾流下陷），并逐帧重算平滑顶点法线；
-// 3) 实时解算 42 片溪面漂浮秋叶（floatingLeaves）：
-//    - 顺流漂动叶（drift）沿 CatmullRomCurve3 溪流路径漂流，遇溪石障碍物平滑绕流；
-//    - 石畔回旋叶（eddy）在溪石旁的水湾处随微澜轻柔打转；
-//    - 所有浮叶实时采样当前位置的三维水波高度 y = waterY(z) + waterWave(x, z, t) 与波面法线梯度（∂h/∂x, ∂h/∂z），
-//      实现真正随流水高低起伏与倾侧摇曳的物理动态。
+// 山涧溪流分区水动力学动态系统（Zoned Mountain Stream Flow & Floating Leaf Kinematics）：
+// 彻底消除「大海长波浪」感，基于地形落差、6 级小瀑布（STREAM_CASCADES）与溪石（STREAM_STONES）位置，
+// 在 CPU 网格与浮叶运动中同步解算五类水动力学分区：
+//   1. 平缓深潭区（Calm Pools）：水面如镜、微澜极轻（起伏仅 1.5~2.5mm），凸显清澈见底与鸟居/树影倒影；
+//   2. 束水湍急段（Rapid Chutes）：河道收窄或接近跌水口处流速加快，形成高频鱼鳞状急流细波；
+//   3. 石头迎水激荡区（Upstream Bow-Wave Cushion）：石头正前方水体受阻隆起弧形水枕并激起高频飞溅涟漪；
+//   4. 石头两侧八字分流区（Lateral Bifurcation Split-Flow）：流线沿势流偶极子向石头左右两侧加速分流并拉出八字波脊；
+//   5. 石后卡门涡街与潭湾漩涡区（Kármán Vortex Street & Eddy Swirls）：石头背水侧交替脱落旋转凹陷涡核，浮叶在此盘旋打转。
 import * as THREE from 'three';
 import { ANIM } from '../config.js';
 import {
+  STREAM_CASCADES,
   STREAM_PATH,
   cascadeFactorAt,
   streamBankHalf,
@@ -16,6 +17,7 @@ import {
   streamDistance,
   streamTAt,
   streamWidthAt,
+  valleyLevel,
   waterY
 } from '../layout.js';
 import { getStreamObstacles, getStreamSplineCurve } from '../assets/stream.js';
@@ -24,7 +26,7 @@ import { registerAnimation } from './registry.js';
 
 export const STREAM_FLOW_NAME = 'streamFlow';
 
-const CULVERT_BOB = 0.004;
+const CULVERT_BOB = 0.003;
 const TAPER_LENGTH = 0.85;
 
 function pathLength() {
@@ -48,46 +50,147 @@ function lateralTaper(x, z) {
 }
 
 /**
- * 含障碍物碰撞反射波与三维起伏波峰的水面物理复合波场：
- * 主顺流行波 + 交叉斜波 + 高频涟漪 + 溪石障碍物迎水弓形涌浪与背水卡门涡街尾迹
+ * 计算任意位置 (x, z) 的局部切线流向、坡降落差、瀑布水跃、石头分流与漩涡分区状态
  */
-export function waterWave(x, z, time, params = ANIM.stream) {
-  const half = Math.max(0.2, streamWidthAt(streamTAt(z)) / 2);
-  const lateral = THREE.MathUtils.clamp(streamDistance(x, z) / half, -1, 1);
-  const s = streamArcLength(z);
-  const k1 = (Math.PI * 2) / params.wavelengthMax;
-  const k2 = (Math.PI * 2) / params.wavelengthMin;
-  const w1 = k1 * params.speed * 1.45;
-  const w2 = k2 * params.rippleSpeed * 1.35;
+export function evaluateHydroZone(x, z) {
+  const dzEps = 0.15;
+  const dxCenter = (streamCenterX(z + dzEps) - streamCenterX(z - dzEps)) / (2 * dzEps);
+  const invLen = 1 / Math.hypot(dxCenter, 1);
+  const tx = dxCenter * invLen;
+  const tz = invLen;
+  const nx = tz;
+  const nz = -tx;
 
-  const long = Math.sin(s * k1 - time * w1 + Math.sin(lateral * 2.2) * 0.6) * 0.58;
-  const short = Math.sin(s * k2 + lateral * 2.8 - time * w2) * 0.34;
-  const cross = Math.cos(lateral * 4.6 + s * 1.3 - time * params.rippleSpeed * 2.4) * 0.24;
-  const chop = Math.sin(x * 7.8 + z * 6.4 - time * 4.8) * 0.16;
+  const half = streamBankHalf(z);
+  const dropSlope = Math.max(0, (valleyLevel(z - dzEps) - valleyLevel(z + dzEps)) / (2 * dzEps));
+  const widthConstrict = Math.max(0, Math.min(1, (0.92 - half) / 0.28));
+  const slopeFactor = Math.max(0, Math.min(1, (dropSlope - 0.085) / 0.45));
 
-  // 溪石与堰石障碍物碰撞反射波纹（迎水侧抬升驻波枕，背水侧形成 V 型尾流波列）
-  let obstacleWave = 0;
+  let cascadePlunge = 0;
+  let cascadeMask = 0;
+  for (let i = 0; i < STREAM_CASCADES.length; i++) {
+    const cas = STREAM_CASCADES[i];
+    const relZ = z - cas.z;
+    if (relZ >= -0.22 && relZ <= 0.62) {
+      const m = Math.max(0, 1 - Math.abs(relZ - 0.08) / 0.34);
+      cascadeMask = Math.max(cascadeMask, m);
+      const p = 1 - Math.abs(relZ - 0.20) / 0.38;
+      if (p > 0) cascadePlunge = Math.max(cascadePlunge, p * p);
+    }
+  }
+
+  let bowWave = 0;
+  let splitShear = 0;
+  let vorticity = 0;
+  let deflectX = 0;
   const obstacles = getStreamObstacles();
   for (let i = 0; i < obstacles.length; i++) {
     const ob = obstacles[i];
     const dz = z - ob.z;
-    if (dz < -0.75 || dz > 1.45) continue;
+    if (dz < -0.75 || dz > 1.35) continue;
     const dx = x - ob.x;
     const dist = Math.hypot(dx, dz);
-    if (dist < ob.r * 3.0) {
-      const ring = Math.sin(dist * 16.5 - time * 5.6 + i) * Math.exp(-dist * 2.1);
-      // 迎水侧（dz < 0）水体受阻隆起（Bow Wave Pillow），背水侧（dz > 0）下陷并拖出涡街
-      const bowLift = dz < 0
-        ? Math.exp(-dist * 3.2) * 0.65
-        : -Math.exp(-dist * 3.6) * 0.38;
-      const wakeBias = dz > 0 ? 1.35 : 0.9;
-      obstacleWave += (ring * 0.38 * wakeBias + bowLift);
+    const R = ob.r * 0.92;
+    if (dist < R * 3.2) {
+      const sPar = dx * tx + dz * tz;
+      const sPerp = dx * nx + dz * nz;
+      if (sPar < 0 && sPar > -R * 1.8) {
+        bowWave += Math.exp(-dist * 3.0) * Math.max(0, 1 - Math.abs(sPerp) / (R * 1.25));
+      }
+      if (Math.abs(sPar) < R * 1.4 && Math.abs(sPerp) > R * 0.65 && Math.abs(sPerp) < R * 2.1) {
+        const env = Math.exp(-Math.abs(Math.abs(sPerp) - R * 1.2) * 2.6) * Math.exp(-Math.abs(sPar) * 1.8);
+        splitShear += env;
+        deflectX += Math.sign(sPerp || 1) * env * 0.45;
+      }
+      if (sPar > R * 0.4 && sPar < R * 3.0 && Math.abs(sPerp) < R * 1.35) {
+        const wakeEnv = Math.exp(-(sPar - R * 0.4) * 1.4) * (1 - Math.abs(sPerp) / (R * 1.35));
+        vorticity += (sPerp >= 0 ? 1 : -1) * wakeEnv;
+      }
     }
   }
 
-  const cascadeBoost = 1 + cascadeFactorAt(z) * 0.95;
-  const amp = Math.max(0.024, params.displacementMax * 1.65);
-  return (long + short + cross + chop + obstacleWave) * amp * cascadeBoost;
+  const dirX = Math.max(-0.85, Math.min(0.85, tx + deflectX));
+  const dirZ = Math.sqrt(Math.max(0.15, 1 - dirX * dirX));
+  const speed = 0.52 + slopeFactor * 0.75 + widthConstrict * 0.42 + cascadeMask * 0.65 + splitShear * 0.45;
+  const plungePool = cascadePlunge;
+  const splash = Math.min(1, bowWave * 0.95 + plungePool * 0.9 + cascadeMask * 0.55);
+
+  return {
+    tx, tz, nx, nz, half, widthConstrict, slopeFactor, cascadePlunge,
+    dirX, dirZ, speed, splash, bowWave, plungePool, cascadeMask,
+    splitShear: Math.min(1, splitShear),
+    vorticity: Math.max(-1, Math.min(1, vorticity))
+  };
+}
+
+/**
+ * 分区水动力学复合波场（彻底消除全河道均一的大海长波浪）：
+ * - 平缓深潭（Calm Pool）：起伏 < 2.5mm；
+ * - 湍急段与八字分流（Rapid & Split-Flow）：高频斜向急流细波；
+ * - 迎石驻波水枕与小瀑布跌水激荡（Bow Splash & Plunge Jump）：局部水枕隆起 + 高频水跃波；
+ * - 石后卡门涡街漩涡（Kármán Vortex Street）：背水旋转凹陷涡列。
+ */
+export function waterWave(x, z, time, params = ANIM.stream) {
+  const hydro = evaluateHydroZone(x, z);
+  const s = streamArcLength(z);
+  const lateral = x - streamCenterX(z);
+
+  let bowWave = 0;
+  let splitChevron = 0;
+  let karmanVortex = 0;
+
+  const obstacles = getStreamObstacles();
+  for (let i = 0; i < obstacles.length; i++) {
+    const ob = obstacles[i];
+    const dz = z - ob.z;
+    if (dz < -0.75 || dz > 1.35) continue;
+    const dx = x - ob.x;
+    const dist = Math.hypot(dx, dz);
+    const R = ob.r * 0.92;
+    if (dist < R * 3.4) {
+      const sPar = dx * hydro.tx + dz * hydro.tz;
+      const sPerp = dx * hydro.nx + dz * hydro.nz;
+
+      // 1) 石头迎水面（sPar < 0）：水体受阻抬升弧形驻波水枕（Bow Wave）+ 飞溅细波
+      if (sPar < 0 && sPar > -R * 1.8) {
+        const frontW = Math.exp(-dist * 3.0) * Math.max(0, 1 - Math.abs(sPerp) / (R * 1.25));
+        const splashRip = Math.sin(dist * 24.0 - time * 11.5 + i) * 0.35;
+        bowWave += frontW * (0.75 + splashRip);
+      }
+
+      // 2) 石头左右两侧（|sPerp| ∈ [0.8R, 2.0R]）：八字绕流分流水脊（Kelvin Split-Flow）
+      if (Math.abs(sPar) < R * 1.4 && Math.abs(sPerp) > R * 0.75 && Math.abs(sPerp) < R * 2.1) {
+        const wakePhase = (Math.abs(sPerp) - sPar * 0.48) * 20.0 - time * 8.5;
+        const splitEnv = Math.exp(-Math.abs(Math.abs(sPerp) - R * 1.25) * 2.8) * Math.exp(-Math.abs(sPar) * 1.8);
+        splitChevron += Math.cos(wakePhase) * splitEnv * 0.52;
+      }
+
+      // 3) 石头背水侧（sPar > 0）：卡门涡街交替旋转凹陷漩涡（Kármán Vortex Street）
+      if (sPar > R * 0.5 && sPar < R * 3.2 && Math.abs(sPerp) < R * 1.35) {
+        const wakeEnv = Math.exp(-(sPar - R * 0.5) * 1.4) * (1 - Math.abs(sPerp) / (R * 1.35));
+        const vortexPhase = sPar * 14.5 - time * 7.2 + (sPerp >= 0 ? 0 : Math.PI);
+        const swirlDimple = -0.38 + 0.45 * Math.sin(vortexPhase) * Math.cos(sPerp * 16.0);
+        karmanVortex += swirlDimple * wakeEnv;
+      }
+    }
+  }
+
+  // 4) 瀑布落水潭冲击水跃（Plunge Pool Hydraulic Jump）
+  const casFactor = cascadeFactorAt(z);
+  const plungeWave = hydro.cascadePlunge * (
+    Math.sin(x * 22.0 + z * 18.0 - time * 12.5) * 0.55 +
+    Math.cos(x * 16.0 - z * 24.0 - time * 14.0) * 0.45
+  ) * 0.68;
+
+  // 5) 束水湍急段鱼鳞细波 vs 平缓深潭微澜（幅度严格受坡降与束水比控制，绝不在深潭产生大浪）
+  const rapidIntensity = Math.min(1, hydro.slopeFactor * 0.65 + hydro.widthConstrict * 0.35 + casFactor * 0.75);
+  const rapidRiffle = (
+    Math.sin(s * 14.0 + Math.abs(lateral) * 11.5 - time * 7.8) * 0.55 +
+    Math.cos(s * 19.5 - lateral * 14.2 - time * 9.6) * 0.45
+  ) * (0.08 + 0.52 * rapidIntensity);
+
+  const baseAmp = Math.max(0.014, params.displacementMax * 1.15);
+  return (rapidRiffle + bowWave + splitChevron + karmanVortex + plungeWave) * baseAmp;
 }
 
 export function waterDisplacement(x, z, time, params = ANIM.stream) {
@@ -181,7 +284,10 @@ export function collectWaterSurfaces(roots) {
 }
 
 /**
- * 推进溪面漂浮落叶：随水流漂动、遇石绕行、并严格贴合三维水波高度与法线倾角上下起伏摇曳
+ * 推进溪面漂浮落叶：
+ * - 在平缓深潭缓慢悠然漂浮，在束水急流与小瀑布处加速下冲；
+ * - 接近溪石时沿势流分流场自动向左右两侧分流绕行（Bifurcation Split-Flow）；
+ * - 石畔漩涡叶在背水回流窝中随漩涡轻柔旋转。
  */
 function stepFloatingLeaves(floatingLeaves, dt, time, strength, params) {
   if (!floatingLeaves.length) return;
@@ -197,7 +303,8 @@ function stepFloatingLeaves(floatingLeaves, dt, time, strength, params) {
     let lz = leaf.position.z;
 
     if (st.mode === 'drift') {
-      const casBoost = 1 + cascadeFactorAt(lz) * 1.35;
+      const hydro = evaluateHydroZone(lx, lz);
+      const casBoost = 1 + cascadeFactorAt(lz) * 1.45 + hydro.slopeFactor * 0.65;
       st.u += st.speed * casBoost * stepDt;
       if (st.u >= 1) {
         st.u -= 1;
@@ -205,8 +312,8 @@ function stepFloatingLeaves(floatingLeaves, dt, time, strength, params) {
       }
       curve.getPointAt(st.u, pt);
       const half = Math.max(0.18, streamBankHalf(pt.z) * 0.62);
-      st.lat += (st.vx + Math.sin(time * 1.4 + st.phase) * 0.03) * stepDt;
-      st.vx *= 0.92;
+      st.lat += (st.vx + Math.sin(time * 1.4 + st.phase) * 0.025) * stepDt;
+      st.vx *= 0.90;
       if (Math.abs(st.lat) > half) {
         st.lat = Math.sign(st.lat) * half;
         st.vx *= -0.5;
@@ -214,48 +321,46 @@ function stepFloatingLeaves(floatingLeaves, dt, time, strength, params) {
       lx = pt.x + st.lat;
       lz = pt.z;
 
-      // 遇溪石障碍物平滑绕流
+      // 势流分流与绕石避障：在石头迎水侧提前沿八字分流线向两侧滑开
       for (let j = 0; j < obstacles.length; j++) {
         const ob = obstacles[j];
         const dz = lz - ob.z;
-        if (Math.abs(dz) > ob.r * 2.0) continue;
+        if (dz < -ob.r * 2.2 || dz > ob.r * 1.8) continue;
         const dx = lx - ob.x;
         const d = Math.hypot(dx, dz);
-        const minR = ob.r + 0.07;
+        const minR = ob.r + 0.075;
+        if (d < ob.r * 1.85 && dz < 0) {
+          const splitDir = dx >= 0 ? 1 : -1;
+          st.vx += splitDir * 0.18 * (1 - d / (ob.r * 1.85));
+        }
         if (d < minR && d > 1e-4) {
           const nx = dx / d;
           lx = ob.x + nx * minR;
           st.lat = lx - pt.x;
-          st.vx += (nx >= 0 ? 1 : -1) * 0.25;
+          st.vx += (nx >= 0 ? 1 : -1) * 0.28;
         }
       }
     } else {
-      // 石畔回旋浮叶：在溪石旁随波浪微幅盘旋摆动
-      const ang = time * st.orbitSpeed + st.phase;
+      // 石畔漩涡浮叶：在背水回流涡旋区随漩涡盘旋打转
+      const ang = time * st.orbitSpeed * 1.25 + st.phase;
       lx = st.anchorX + Math.cos(ang) * st.orbitR;
       lz = st.anchorZ + Math.sin(ang) * st.orbitR;
     }
 
-    // 实时采样该点的三维波浪高度与有限差分斜率，让落叶随水波高低起伏并随波面倾斜
     const hC = waterWave(lx, lz, time, params);
     const hR = waterWave(lx + eps, lz, time, params);
     const hU = waterWave(lx, lz + eps, time, params);
     const dHx = (hR - hC) / eps;
     const dHz = (hU - hC) / eps;
 
-    // 同步叠加 Shader 中 Gerstner 波的竖直起伏分量，使落叶与 GPU 水面波峰严丝合缝
-    const gerstnerY =
-      Math.sin(lz * 5.8 - time * 4.8 + Math.sin(lx * 3.2) * 0.85) * 0.018 +
-      Math.sin(lx * 7.4 + lz * 4.3 - time * 3.9) * 0.012;
-
-    const ly = waterY(lz) + (hC * 0.65 + gerstnerY * 0.85) * strength + 0.007;
-    st.yaw += st.yawSpeed * stepDt;
+    const ly = waterY(lz) + hC * strength + 0.007;
+    st.yaw += (st.mode === 'eddy' ? st.orbitSpeed * 0.65 : st.yawSpeed) * stepDt;
 
     leaf.position.set(lx, ly, lz);
     leaf.rotation.set(
-      THREE.MathUtils.clamp(-dHz * 0.55 + Math.sin(time * 2.8 + st.phase) * 0.08, -0.35, 0.35),
+      THREE.MathUtils.clamp(-dHz * 0.55 + Math.sin(time * 2.4 + st.phase) * 0.05, -0.32, 0.32),
       st.yaw,
-      THREE.MathUtils.clamp(dHx * 0.55 + Math.cos(time * 2.4 + st.phase) * 0.08, -0.35, 0.35)
+      THREE.MathUtils.clamp(dHx * 0.55 + Math.cos(time * 2.1 + st.phase) * 0.05, -0.32, 0.32)
     );
   }
 }
@@ -270,7 +375,6 @@ export function createStreamFlow(roots, options = {}) {
     const dt = Math.max(0.004, time - lastTime);
     lastTime = time;
 
-    // 1. 推进水面与水底折射焦散着色器的时间
     for (const mat of WATER_FLOW_MATERIALS) {
       tuneMaterial(mat, 'uTime', time);
     }
@@ -278,10 +382,8 @@ export function createStreamFlow(roots, options = {}) {
       tuneMaterial(mat, 'uCausticTime', time);
     }
 
-    // 2. 推进溪面漂浮落叶随波高低起伏、倾侧摇曳与顺流漂动
     stepFloatingLeaves(floatingLeaves, dt, time, strength, params);
 
-    // 3. 推进水面高密度网格三维波浪与撞石反射波纹
     for (const surface of surfaces) {
       const array = surface.attribute.array;
       const base = surface.base;

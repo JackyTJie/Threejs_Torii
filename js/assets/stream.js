@@ -485,6 +485,7 @@ export function createStreamWater(M) {
     }
   });
 
+  meshCount += buildFeatheredCascadeSheets(root, M);
   meshCount += buildFloatingStreamLeaves(root, M);
 
   root.userData.samples = samples;
@@ -558,6 +559,7 @@ export function createStreamBed(M) {
     lining.castShadow = false;
     lining.receiveShadow = true;
     lining.userData.noCast = true;
+    lining.userData.noOutline = true;
     root.add(lining);
     meshCount += 1;
   });

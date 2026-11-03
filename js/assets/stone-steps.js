@@ -12,12 +12,12 @@ import { PATH, frontZ, pathBoundsAt, pathShiftX, pathYaw, stepTopY } from '../la
 import { fbm3, group, leafSheetGeometry, mesh, place, rng, rockGeometry, triplanarUv } from '../primitives.js';
 
 const UV_TILE = 1.2;
-const BURIAL = 0.065;
-const JOINT_GAP = [0.032, 0.064];
-const YAW_MAX = 0.018;
-const JITTER_UP = 0.012;
-const MIN_SLAB_WIDTH = 0.60;
-const WET_ODDS = 0.26;
+const BURIAL = 0.072;
+const JOINT_GAP = [0.042, 0.082];
+const YAW_MAX = 0.048;
+const JITTER_UP = 0.016;
+const MIN_SLAB_WIDTH = 0.42;
+const WET_ODDS = 0.28;
 
 const lerp = (a, b, t) => a + (b - a) * t;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -32,7 +32,7 @@ function zoneMaterial(M, k) {
   return M.stoneStepUpper;
 }
 
-/** 一级沿 X 的切分（随弯曲参道中心线偏移 shiftX） */
+/** 一级沿 X 的切分（随弯曲参道中心线偏移 shiftX，每级 3~4 块大小错落的古石块） */
 function slabSplits(rand, count, shiftX = 0) {
   const x0 = PATH.x0 + shiftX;
   const x1 = PATH.x1 + shiftX;
@@ -41,7 +41,7 @@ function slabSplits(rand, count, shiftX = 0) {
   const totalGap = gaps.reduce((a, b) => a + b, 0);
   const usable = x1 - x0 - totalGap;
   const weights = [];
-  for (let i = 0; i < count; i++) weights.push(0.68 + rand() * 0.68);
+  for (let i = 0; i < count; i++) weights.push(0.55 + rand() * 0.92);
   const sum = weights.reduce((a, b) => a + b, 0);
   const spans = [];
   let cursor = x0;
@@ -50,10 +50,13 @@ function slabSplits(rand, count, shiftX = 0) {
     spans.push([cursor, cursor + width]);
     cursor += width + (i < count - 1 ? gaps[i] : 0);
   }
-  const last = spans[count - 1];
-  if (last[1] > x1) {
+  const last = spans[spans.length - 1];
+  if (last && last[1] > x1) {
     last[1] = x1;
-    if (last[1] - last[0] < 0.2) spans.pop();
+    if (last[1] - last[0] < 0.25 && spans.length > 1) {
+      spans.pop();
+      spans[spans.length - 1][1] = x1;
+    }
   }
   return spans;
 }
@@ -61,102 +64,72 @@ function slabSplits(rand, count, shiftX = 0) {
 /** 复现第 k 级弯曲石板沿 X 的切分区间（供 puddle.js 精确裁切水面） */
 export function stepSlabSpans(k) {
   const rand = rng(k * 977 + 13);
-  const count = rand() < 0.34 ? 3 : 2;
+  const count = rand() < 0.64 ? 3 : 4;
   const cz = frontZ(k) - PATH.tread * 0.5;
   return slabSplits(rand, count, pathShiftX(cz));
 }
 
 /**
- * 千年风化沧桑古石阶单块三维雕塑网格：
- * - 基于 14 × 5 × 8 细分 BoxGeometry（顶面 y = 0，底面 y = -thickness）；
- * - 1) 四周与前缘（踏鼻）大半径圆润磨损倒角（Pillow / Rounded Bevel），消除一切 90° 硬直棱；
- * - 2) 轮廓不规则风化内凹与缺角（局部岩石崩落豁口）；
- * - 3) 踏面中部千年足迹踩踏微凹弧度（Tread Dish Wear）与天然岩面层理起伏。
+ * 千年风化沧桑古石阶单块连续闭合三维雕塑网格（Superellipsoid Pillow Stone）：
+ * - 基于完全焊接（无缝）的 `SphereGeometry(1, 18, 12)` 超椭球变形（|u|^0.58 软方枕映射），
+ *   彻底杜绝 BoxGeometry 六面不共顶点导致的 90° 硬直折痕与机械平整感；
+ * - 顶面踏鼻（面向下山 +Z 方向）呈浑圆饱满的风化鹅卵石弧度，法线在顶面、前鼻与侧面之间 100% 连续平滑过渡；
+ * - 叠加三维岩石层理 FBM 凹凸、两侧不规则风化豁口与千年足迹踩踏微凹鞍面（Dish Wear）。
  */
 function ancientStepBlockGeometry(width, thickness, depth, seed, rand) {
-  const geo = new THREE.BoxGeometry(width, thickness, depth, 14, 5, 8);
-  // 将顶面移至 y = 0，底面 y = -thickness，与原 slabGeometry 局部坐标系完全一致
-  geo.translate(0, -thickness * 0.5, 0);
-
+  const geo = new THREE.SphereGeometry(1, 18, 12);
   const pos = geo.getAttribute('position');
   const hw = width * 0.5;
   const hd = depth * 0.5;
+  const ht = thickness * 0.5;
 
-  // 为每块古石板生成 2 处随机风化崩角位置（常出现在前缘或左右角）
-  const chip1X = (rand() < 0.5 ? -1 : 1) * hw * (0.55 + rand() * 0.42);
-  const chip1Z = hd * (0.45 + rand() * 0.52);
-  const chip1R = 0.08 + rand() * 0.09;
-  const chip2X = (rand() - 0.5) * width * 0.75;
-  const chip2Z = hd * (0.72 + rand() * 0.28);
-  const chip2R = 0.06 + rand() * 0.08;
+  // 每块古石特有的不规则斜向劈裂锥度与两处风化缺角
+  const skewX = (rand() - 0.5) * 0.08;
+  const taperFront = (rand() - 0.5) * 0.10;
+  const chipX = (rand() < 0.5 ? -1 : 1) * hw * (0.48 + rand() * 0.42);
+  const chipZ = hd * (0.42 + rand() * 0.48);
+  const chipR = 0.09 + rand() * 0.09;
+
+  const sgnPow = (v, p) => Math.sign(v) * Math.pow(Math.abs(v), p);
 
   for (let i = 0; i < pos.count; i++) {
-    let x = pos.getX(i);
-    let y = pos.getY(i);
-    let z = pos.getZ(i);
+    const ux = pos.getX(i);
+    const uy = pos.getY(i);
+    const uz = pos.getZ(i);
 
-    const nx = x / Math.max(0.01, hw); // [-1, 1]
-    const nz = z / Math.max(0.01, hd); // [-1, 1]，+1 为面向下山方向的前缘踏鼻
-    const ny = (y + thickness) / Math.max(0.01, thickness); // [0=底, 1=顶]
+    // 1. 超椭球软枕形映射（p ≈ 0.56~0.64：既有厚重石块体量，又具浑圆饱满的千年磨损圆弧边角）
+    const sx = sgnPow(ux, 0.58);
+    const sy = sgnPow(uy, 0.54);
+    const sz = sgnPow(uz, 0.60);
 
-    // 1. 三维自然层理噪声（打破横平竖直的边界线，使石板侧缘呈天然手工劈制的不规则弧线）
-    const nMacro = fbm3(x * 3.4 + seed * 1.3, y * 4.2, z * 3.4 - seed * 0.7, 3);
-    const nFine = fbm3(x * 8.5 - seed * 0.5, y * 9.0, z * 8.5 + seed * 1.9, 3);
+    let x = sx * hw * (1 + uz * taperFront) + uz * skewX * hw;
+    let y = (sy - 1.0) * ht; // 顶面位于 y ≈ 0，底面位于 y ≈ -thickness
+    let z = sz * hd;
 
-    const edgeMaskX = smoothstep(0.55, 1.0, Math.abs(nx));
-    const edgeMaskZ = smoothstep(0.50, 1.0, Math.abs(nz));
-    const perimMask = Math.max(edgeMaskX, edgeMaskZ);
+    // 2. 三维天然岩石层理噪声（使每块石头的边缘与表面呈手工凿制+千年风化的不规则起伏）
+    const nMacro = fbm3(x * 3.6 + seed * 1.37, y * 4.5, z * 3.6 - seed * 0.83, 3);
+    const nFine = fbm3(x * 8.8 - seed * 0.61, y * 9.2, z * 8.8 + seed * 1.73, 3);
 
-    // 平面轮廓不规则凹凸调制（前缘与左右缝呈自然弯曲风化边）
-    x += (nMacro - 0.5) * 0.042 * edgeMaskX + (nFine - 0.5) * 0.016;
-    z += (nMacro - 0.5) * 0.038 * edgeMaskZ + (nFine - 0.5) * 0.015;
+    x += (nMacro - 0.5) * 0.052 + (nFine - 0.5) * 0.018;
+    z += (nMacro - 0.5) * 0.046 + (nFine - 0.5) * 0.016;
 
-    // 2. 局部沧桑崩角凹陷（前缘与角部不规则磨损退缩）
-    const dChip1 = Math.hypot(x - chip1X, z - chip1Z);
-    if (dChip1 < chip1R) {
-      const k1 = (1 - dChip1 / chip1R);
-      const shrink = k1 * k1 * 0.036;
-      x -= Math.sign(x || 1) * shrink * 0.85;
-      z -= Math.sign(z || 1) * shrink;
-      if (ny > 0.35) y -= k1 * k1 * 0.024;
-    }
-    const dChip2 = Math.hypot(x - chip2X, z - chip2Z);
-    if (dChip2 < chip2R) {
-      const k2 = (1 - dChip2 / chip2R);
-      z -= k2 * k2 * 0.028;
-      if (ny > 0.35) y -= k2 * k2 * 0.018;
+    // 3. 前缘踏鼻圆弧下倾与局部沧桑缺角
+    const dChip = Math.hypot(x - chipX, z - chipZ);
+    if (dChip < chipR) {
+      const k = 1 - dChip / chipR;
+      const dent = k * k * 0.038;
+      x -= Math.sign(x || 1) * dent * 0.8;
+      z -= Math.sign(z || 1) * dent;
+      if (uy > 0) y -= k * k * 0.026;
     }
 
-    // 3. 千年圆润磨损倒角（Pillow Bevel）：顶面四周（尤其是前缘踏鼻 nz > 0.35 与侧棱）平滑下弯，立面顶部向内圆滑收拢
-    const frontProximity = smoothstep(0.32, 1.0, nz);
-    const backProximity = smoothstep(0.58, 1.0, -nz);
-    const sideProximity = smoothstep(0.62, 1.0, Math.abs(nx));
-    const cornerBlend = Math.min(1.0, Math.hypot(
-      Math.max(0, (Math.abs(nx) - 0.58) / 0.42),
-      Math.max(0, (Math.abs(nz) - 0.38) / 0.62)
-    ));
-
-    if (ny > 0.18) {
-      const topWeight = smoothstep(0.18, 0.96, ny);
-      // 前缘踏鼻因千年踩踏磨损最圆润（下沉 2.4~3.6cm），侧边与四角次之
-      const bevelDrop = (
-        frontProximity * frontProximity * (0.024 + 0.014 * nMacro) +
-        sideProximity * sideProximity * (0.018 + 0.010 * nFine) +
-        backProximity * backProximity * 0.012 +
-        cornerBlend * cornerBlend * 0.016
-      ) * topWeight;
-      y -= bevelDrop;
-
-      // 顶棱向内圆润收缩（消除垂直面与水平面交界的生硬折角）
-      const inwardPull = topWeight * (0.018 + 0.012 * nMacro);
-      x -= Math.sign(x) * sideProximity * inwardPull;
-      z -= Math.sign(z) * Math.max(frontProximity, backProximity * 0.6) * inwardPull;
-
-      // 4. 踏面中央常年踩踏微凹弧度（Tread Dish Wear）与岩面天然层理起伏
-      const centerTread = (1 - perimMask * 0.85) * smoothstep(0.65, 1.0, ny);
-      const footDish = Math.cos(nx * Math.PI * 0.5) * Math.cos(nz * Math.PI * 0.4) * 0.010;
-      const surfaceUndulation = ((nMacro - 0.5) * 0.016 + (nFine - 0.5) * 0.007) * smoothstep(0.5, 1.0, ny);
-      y += surfaceUndulation - footDish * centerTread;
+    // 4. 踏面中央常年香客踩踏形成的微凹弧形洼槽（Tread Dish Wear）与层理起伏
+    if (uy > 0.15) {
+      const topMask = smoothstep(0.15, 0.85, uy);
+      const centerDish = Math.max(0, 1 - (ux * ux * 0.85 + uz * uz * 0.75)) * 0.014;
+      const frontWear = smoothstep(0.25, 0.95, uz) * 0.018;
+      const rockWave = ((nMacro - 0.5) * 0.022 + (nFine - 0.5) * 0.008) * topMask;
+      y += rockWave - (centerDish + frontWear) * topMask;
     }
 
     pos.setXYZ(i, x, y, z);
@@ -286,17 +259,17 @@ export function createStoneSteps(M, options = {}) {
     const top = stepTopY(k);
     const zBack = zFront - PATH.tread;
     const cz = (zFront + zBack) / 2;
-    const count = rand() < 0.38 ? 3 : 2;
+    const count = rand() < 0.64 ? 3 : 4;
     const zoneMat = zoneMaterial(M, k);
     const spans = slabSplits(rand, count, pathShiftX(cz));
-    const curveYaw = pathYaw(cz) * 0.32;
+    const curveYaw = pathYaw(cz) * 0.36;
 
     for (let j = 0; j < spans.length; j++) {
       const [xa, xb] = spans[j];
       const cx = (xa + xb) / 2;
       const width = Math.max(0.32, xb - xa);
-      const depth = PATH.tread * (0.96 + rand() * 0.08);
-      const thickness = PATH.rise + BURIAL + rand() * 0.032;
+      const depth = PATH.tread * (0.90 + rand() * 0.16);
+      const thickness = PATH.rise + BURIAL + rand() * 0.042;
 
       const geo = triplanarUv(
         ancientStepBlockGeometry(width, thickness, depth, k * 53 + j * 17 + 7, rand),
@@ -305,14 +278,14 @@ export function createStoneSteps(M, options = {}) {
       );
       const slab = mesh(geo, rand() < WET_ODDS ? M.stoneStepWet : zoneMat, `stoneStep-${k}-${j}`);
       place(slab, {
-        x: cx + (rand() - 0.5) * 0.018,
+        x: cx + (rand() - 0.5) * 0.024,
         y: top + (rand() - 0.35) * JITTER_UP,
-        z: cz + (rand() - 0.5) * 0.016,
+        z: cz + (rand() - 0.5) * 0.022,
         ry: curveYaw + lerp(-YAW_MAX, YAW_MAX, rand())
       });
       // 千年地基自然微沉降倾侧（打破机械水平面）
-      slab.rotation.x = (rand() - 0.35) * 0.022;
-      slab.rotation.z = (rand() - 0.5) * 0.020;
+      slab.rotation.x = (rand() - 0.35) * 0.036;
+      slab.rotation.z = (rand() - 0.5) * 0.034;
       slab.castShadow = true;
       slab.receiveShadow = true;
       root.add(slab);

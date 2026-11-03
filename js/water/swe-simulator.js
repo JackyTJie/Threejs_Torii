@@ -1,20 +1,17 @@
-// 四阶段二维浅水方程（2D Shallow Water Equations / Wave PDE on GPU Texture）+ 斯涅尔折射深度通道 + 实时平面/光追反射通道
+// 分区水动力学山涧浅溪模拟系统（Zoned Mountain Stream Hydrodynamics & SWE on GPU Texture）
 //
-// 阶段一：搭建物理模拟管线（SWE on GPU Ping-Pong FBO Texture）
-//   - 双缓冲浮点纹理（WebGLRenderTarget HalfFloatType, 128x256）：
-//     * R 通道 = 当前水高扰动 h(x, z, t)
-//     * G 通道 = 旧水高 h(x, z, t - dt)
-//     * B 通道 = 地形/溪石障碍物掩码（0 = 水域，1 = 石块/岸壁障碍物）
-//     * A 通道 = 流速/动量变化率与绕石尾流涡度能量
-//   - 模拟着色器（SWE_SIM_FS）：基于拉普拉斯算子与顺流平流项求解浅水波动方程；
-//     遇障碍物（B > 0.5）强制反射波能并在迎水侧抬升真实三维驻波（Bow Wave），背水侧生成涡街凹槽；
-//   - 交互输入机制：接收射线命中点，在纹理上写入瞬时高斯水高增量激起动态交互波纹。
+// 针对山涧溪流地形落差（z: -14.5 → +14.5，总落差 4.23m）、6 级小瀑布跌水（STREAM_CASCADES）与
+// 溪内乱石（STREAM_STONES + 叠石堰）的精确空间坐标，先离线解算全流域水动力学分区场（uObstacleTex），
+// 再在 GPU Ping-Pong FBO 中按分区物理规律迭代求解水面波场，彻底消除「大海长波浪」感：
 //
-// 阶段三：水底折射深度通道（Refraction & Depth Pass）与实时倒影反射通道（Planar Reflection Pass）
-//   - 折射通道（refractionTarget）：隐藏水面，将河床泥沙（streamBed）、水中鹅卵石、沉叶与溪石（streamStones）
-//     连同真实树冠阴影渲染到带 THREE.DepthTexture 的离屏缓冲，供水面按波浪法线进行斯涅尔折射采样，清澈见底；
-//   - 反射通道（reflectionTarget）：构建关于山涧斜面镜像对称的反射相机（reflectionCamera），实时渲染上方的
-//     翠绿树冠与远处的朱红色明神鸟居到离屏纹理，供水面结合波浪法线与 3D 光追产生波光粼粼的真实倒影。
+// 【五类水文分区场编码（uObstacleTex 128×256 FloatTexture）】
+//   - R 通道 (flowDirX)：含绕石势流偏转（Potential Flow Dipole Deflection）的局部单位流向 X 分量（范围映射到 [0, 1]）；
+//   - G 通道 (regimeSpeed)：局部水动力流速与湍急度（0.15 = 平缓深潭区，0.55 = 束水湍急段/分流加速区，0.95 = 瀑布跌水/迎石激荡区）；
+//   - B 通道 (obstacleAndSplash)：
+//       * B > 0.75：出水岩石与岸壁实体障碍物（严格反射边界）；
+//       * B ∈ (0.05, 0.70]：石头迎水驻点激荡区（Bow Splash Cushion）与小瀑布落水潭冲击水跃区（Plunge Pool Hydraulic Jump）；
+//   - A 通道 (vortexAndSplit)：
+//       * 石头背水侧卡门涡街漩涡区（Kármán Vortex Street / Recirculation Eddy）与两侧八字绕流剪切带（Bifurcation Shear）。
 import * as THREE from 'three';
 import {
   CONTENT_HALF,
@@ -22,6 +19,7 @@ import {
   streamBankHalf,
   streamCenterX,
   terrainHeight,
+  valleyLevel,
   waterY
 } from '../layout.js';
 import { getStreamObstacles } from '../assets/stream.js';
@@ -30,7 +28,7 @@ export const SWE_TEX_WIDTH = 128;
 export const SWE_TEX_HEIGHT = 256;
 
 export const SWE_DOMAIN = {
-  xMin: -6.2,
+  xMin: -7.2,
   xMax: -0.8,
   zMin: -CONTENT_HALF,
   zMax: CONTENT_HALF
@@ -65,18 +63,25 @@ export const SWE_SIM_FS = /* glsl */ `
   }
 
   void main() {
-    vec4 obsInfo = texture2D( uObstacleTex, vUv );
-    float obstacle = obsInfo.b;
-    float cascadeSource = obsInfo.a;
+    vec4 hydro = texture2D( uObstacleTex, vUv );
+    float flowDirX = hydro.r * 2.0 - 1.0;
+    float flowDirZ = sqrt( max( 0.05, 1.0 - flowDirX * flowDirX ) );
+    vec2 flowDir = normalize( vec2( flowDirX, flowDirZ ) );
+    float regimeSpeed = hydro.g; // 0.15=平缓深潭, 0.55=湍急/分流, 0.95=瀑布/激荡
+    float obsSplash = hydro.b;   // >0.75=岩石实体, 0.05~0.70=迎水激荡与瀑布水跃
+    float vortexIntensity = hydro.a; // 石后卡门涡街与回流漩涡强度
 
-    // 障碍物边界约束：石头内部水高与速度严格置 0
-    if ( obstacle > 0.5 ) {
-      gl_FragColor = vec4( 0.0, 0.0, obstacle, 0.0 );
+    // 1) 障碍物硬边界约束：石头内部水高置 0
+    if ( obsSplash > 0.75 ) {
+      gl_FragColor = vec4( 0.0, 0.0, 1.0, 0.0 );
       return;
     }
 
-    // 顺流平流采样（沿溪流切向推进）
-    vec2 advectUv = vUv - vec2( 0.0, uTexelSize.y * 0.42 );
+    float splashMask = clamp( obsSplash / 0.65, 0.0, 1.0 );
+
+    // 2) 沿局部真实流线方向（含绕石分流偏转角）进行半拉格朗日平流采样
+    vec2 advectStep = vec2( flowDir.x * uTexelSize.x, flowDir.y * uTexelSize.y ) * ( 0.22 + 0.65 * regimeSpeed );
+    vec2 advectUv = vUv - advectStep;
     vec4 center = texture2D( uStateTex, advectUv );
     float hCurr = center.r;
     float hPrev = center.g;
@@ -89,40 +94,53 @@ export const SWE_SIM_FS = /* glsl */ `
     vec4 eSample = texture2D( uStateTex, advectUv + dx );
     vec4 wSample = texture2D( uStateTex, advectUv - dx );
 
-    float oN = texture2D( uObstacleTex, vUv + dy ).b;
-    float oS = texture2D( uObstacleTex, vUv - dy ).b;
-    float oE = texture2D( uObstacleTex, vUv + dx ).b;
-    float oW = texture2D( uObstacleTex, vUv - dx ).b;
+    float oN = step( 0.75, texture2D( uObstacleTex, vUv + dy ).b );
+    float oS = step( 0.75, texture2D( uObstacleTex, vUv - dy ).b );
+    float oE = step( 0.75, texture2D( uObstacleTex, vUv + dx ).b );
+    float oW = step( 0.75, texture2D( uObstacleTex, vUv - dx ).b );
 
-    // 诺伊曼障碍物反射边界：碰撞石头（B > 0.5）时波浪反射并在迎水侧抬升真实涌浪，背水侧下陷
-    float hN = oN > 0.5 ? hCurr * 0.96 + 0.0055 : nSample.r;
-    float hS = oS > 0.5 ? hCurr * 0.92 - 0.0042 : sSample.r;
-    float hE = oE > 0.5 ? hCurr * 0.94 + 0.0020 : eSample.r;
-    float hW = oW > 0.5 ? hCurr * 0.94 + 0.0020 : wSample.r;
+    // 诺伊曼障碍物反射边界：碰撞石头迎水面抬升驻波水枕（Bow Wave），背水面微凹下陷
+    float hN = oN > 0.5 ? hCurr * 0.95 + 0.0048 : nSample.r;
+    float hS = oS > 0.5 ? hCurr * 0.90 - 0.0038 : sSample.r;
+    float hE = oE > 0.5 ? hCurr * 0.94 + 0.0022 : eSample.r;
+    float hW = oW > 0.5 ? hCurr * 0.94 + 0.0022 : wSample.r;
 
     float neighborAvg = ( hN + hS + hE + hW ) * 0.25;
-    float velocity = ( hCurr - hPrev ) * uDamping + ( neighborAvg - hCurr ) * uWaveSpeed;
-    float hNext = ( hCurr + velocity ) * uDamping;
+    // 平缓深潭阻尼高（水面如明镜微澜），湍急段波速快
+    float localDamping = mix( 0.992, 0.978, regimeSpeed );
+    float velocity = ( hCurr - hPrev ) * localDamping + ( neighborAvg - hCurr ) * uWaveSpeed * ( 0.75 + 0.45 * regimeSpeed );
+    float hNext = ( hCurr + velocity ) * localDamping;
 
-    // 瀑布跌水与石块背水侧卡门涡街持续三维波浪激励
     vec2 worldXZ = uvToWorld( vUv );
-    float nearObstacle = clamp( oN + oS + oE + oW, 0.0, 1.0 );
-    float wakeSource = (
-      sin( worldXZ.y * 8.5 - uTime * 5.8 + worldXZ.x * 6.2 ) * 0.65 +
-      cos( worldXZ.y * 13.4 - uTime * 8.1 - worldXZ.x * 9.1 ) * 0.35
-    ) * 0.0042 * nearObstacle;
-    float cascadeWave = (
-      sin( worldXZ.x * 9.5 + worldXZ.y * 5.4 - uTime * 7.6 ) * 0.6 +
-      cos( worldXZ.x * 14.8 - worldXZ.y * 7.2 - uTime * 10.2 ) * 0.4
-    ) * 0.0058 * cascadeSource;
+    float along = dot( worldXZ, flowDir );
+    float crossCoord = dot( worldXZ, vec2( -flowDir.y, flowDir.x ) );
 
-    // 连续山涧行波注入（保证全流域具备自然高低起伏的波峰与波谷）
-    float streamWave = (
-      sin( worldXZ.y * 4.2 - uTime * 4.6 + sin( worldXZ.x * 2.8 ) * 0.9 ) * 0.0018 +
-      cos( worldXZ.x * 5.6 + worldXZ.y * 3.1 - uTime * 3.8 ) * 0.0012
-    );
+    // 3) 分区差异化波源激励（彻底摒弃全流域大振幅正弦海浪）：
+    // (a) 迎水驻点与瀑布跌水激荡区：高频水跃震荡与迎石水枕隆起
+    float splashSource = (
+      sin( crossCoord * 18.0 + along * 12.0 - uTime * 11.5 ) * 0.55 +
+      cos( crossCoord * 25.0 - along * 16.0 - uTime * 14.2 ) * 0.45 +
+      0.38
+    ) * 0.0052 * splashMask;
 
-    hNext += wakeSource + cascadeWave + streamWave;
+    // (b) 石后卡门涡街与潭侧回流漩涡区：交替脱落的旋转凹陷涡核（Vortex Dimples）
+    float vortexAngle = atan( crossCoord, along ) * 2.0 - uTime * 6.4 + length( worldXZ ) * 9.5;
+    float vortexSource = (
+      sin( vortexAngle ) * 0.65 - 0.35
+    ) * 0.0038 * vortexIntensity;
+
+    // (c) 束水湍急段与绕石分流加速区：细密鱼鳞状急流斜波（Chevron Riffles）
+    float rapidMask = smoothstep( 0.32, 0.78, regimeSpeed ) * ( 1.0 - splashMask * 0.6 );
+    float rapidRiffle = (
+      sin( along * 11.5 + abs( crossCoord ) * 9.2 - uTime * 8.4 ) * 0.6 +
+      cos( along * 16.2 - crossCoord * 12.4 - uTime * 10.6 ) * 0.4
+    ) * 0.0022 * rapidMask;
+
+    // (d) 平缓深潭区：极微弱的林间清风细纹（振幅仅 0.3mm，绝无大海浪感）
+    float poolCalmMask = 1.0 - smoothstep( 0.18, 0.48, regimeSpeed );
+    float poolWhisper = sin( along * 6.5 - uTime * 2.8 + crossCoord * 4.2 ) * 0.00035 * poolCalmMask;
+
+    hNext += splashSource + vortexSource + rapidRiffle + poolWhisper;
 
     // 指针射线交互波纹注入
     if ( uImpulse.z > 0.0001 ) {
@@ -133,20 +151,29 @@ export const SWE_SIM_FS = /* glsl */ `
       }
     }
 
-    hNext = clamp( hNext, -0.065, 0.065 );
+    hNext = clamp( hNext, -0.048, 0.048 );
 
-    // A 通道：仅在紧贴石头接触圈（nearObstacle）与瀑布落水口记录激荡强度，绝不涂抹全河道
-    float gradMag = length( vec2( hE - hW, hN - hS ) ) * 16.0;
+    // A 通道输出综合激荡/水花/涡旋强度供片元着色器精细渲染
+    float gradMag = length( vec2( hE - hW, hN - hS ) ) * 14.0;
     float agitation = clamp(
-      nearObstacle * 0.72 + cascadeSource * 0.68 + gradMag * 0.35,
+      splashMask * 0.85 + vortexIntensity * 0.45 + rapidMask * 0.25 + gradMag * 0.25,
       0.0,
       1.0
     );
 
-    gl_FragColor = vec4( hNext, hCurr, obstacle, agitation );
+    gl_FragColor = vec4( hNext, hCurr, 0.0, agitation );
   }
 `;
 
+/**
+ * 离线精确计算小溪全流域每个网格点的：
+ * 1) 地形落差坡度（dValley/dz）与河宽束水比；
+ * 2) 6 级小瀑布跌水口加速区与落水潭水跃激荡区；
+ * 3) 每块溪石（STREAM_STONES）与叠石堰的相对流向坐标 (s_parallel, s_perp)：
+ *    - 迎水驻点水花区（s_parallel < 0）
+ *    - 左右两侧势流绕石分流偏转角（Potential Flow Dipole Deflection）
+ *    - 背水侧卡门涡街漩涡区（s_parallel > 0）
+ */
 export function buildSweInitialTextures() {
   const size = SWE_TEX_WIDTH * SWE_TEX_HEIGHT;
   const stateData = new Float32Array(size * 4);
@@ -160,12 +187,39 @@ export function buildSweInitialTextures() {
     const cx = streamCenterX(z);
     const half = streamBankHalf(z);
 
-    let casFactor = 0;
+    // 计算当前断面中心线的切线流向 (txBase, tzBase) 与河床坡降落差率 slope
+    const dzEps = 0.15;
+    const dxCenter = (streamCenterX(z + dzEps) - streamCenterX(z - dzEps)) / (2 * dzEps);
+    const invLen = 1 / Math.hypot(dxCenter, 1);
+    const txBase = dxCenter * invLen;
+    const tzBase = invLen;
+    const nxBase = tzBase;
+    const nzBase = -txBase;
+
+    const localDropSlope = Math.max(0, (valleyLevel(z - dzEps) - valleyLevel(z + dzEps)) / (2 * dzEps));
+    // 河道越窄（half 小）、坡降越大（localDropSlope 大），基础流速越高
+    const widthConstrict = Math.max(0, Math.min(1, (0.92 - half) / 0.28));
+    const slopeFactor = Math.max(0, Math.min(1, (localDropSlope - 0.085) / 0.45));
+
+    // 小瀑布跌水与落水潭水跃激荡区计算
+    let cascadeRapid = 0;
+    let cascadePlungeSplash = 0;
+    let cascadePoolVortex = 0;
     for (const cas of STREAM_CASCADES) {
-      const dz = Math.abs(z - cas.z);
-      if (dz < cas.halfSpan * 1.35) {
-        const w = 1 - dz / (cas.halfSpan * 1.35);
-        casFactor = Math.max(casFactor, w * w);
+      const relZ = z - cas.z; // <0 为瀑布唇口上游，>0 为落水潭下游
+      if (relZ >= -cas.halfSpan * 1.1 && relZ <= cas.halfSpan * 0.9) {
+        const w = 1 - Math.abs(relZ) / (cas.halfSpan * 1.1);
+        cascadeRapid = Math.max(cascadeRapid, w);
+      }
+      // 瀑布正下方落水冲击点（z ∈ [cas.z - 0.08, cas.z + 0.48]）：强烈激荡水花
+      if (relZ >= -0.10 && relZ <= 0.52) {
+        const p = 1 - Math.abs(relZ - 0.18) / 0.34;
+        if (p > 0) cascadePlungeSplash = Math.max(cascadePlungeSplash, p * p);
+      }
+      // 瀑布落水潭两侧（z ∈ [cas.z + 0.20, cas.z + 0.95]）：回流漩涡区
+      if (relZ >= 0.18 && relZ <= 0.98) {
+        const e = 1 - Math.abs(relZ - 0.55) / 0.42;
+        if (e > 0) cascadePoolVortex = Math.max(cascadePoolVortex, e);
       }
     }
 
@@ -175,31 +229,102 @@ export function buildSweInitialTextures() {
       const idx = (iy * SWE_TEX_WIDTH + ix) * 4;
 
       const ground = terrainHeight(x, z);
-      let isObstacle = ground >= wy + 0.015 || Math.abs(x - cx) > half + 0.35 ? 1.0 : 0.0;
+      let isSolidObstacle = ground >= wy + 0.015 || Math.abs(x - cx) > half + 0.35;
 
-      let stoneProx = 0;
+      let flowX = txBase;
+      let flowZ = tzBase;
+      let bowSplash = 0;
+      let splitSpeedBoost = 0;
+      let wakeVortex = 0;
+
+      // 遍历每块溪石与叠石堰，解算局部势流绕流分流场、迎水激荡水花与背水卡门涡街
       for (const ob of obstacles) {
-        const d = Math.hypot(x - ob.x, z - ob.z);
-        if (d < ob.r * 0.92) {
-          isObstacle = 1.0;
-        } else if (d < ob.r * 1.45) {
-          stoneProx = Math.max(stoneProx, 1 - (d - ob.r * 0.92) / (ob.r * 0.53));
+        const rx = x - ob.x;
+        const rz = z - ob.z;
+        const dist = Math.hypot(rx, rz);
+        const R = ob.r * 0.92;
+        if (dist < R) {
+          isSolidObstacle = true;
+          break;
+        }
+        if (dist < R * 3.8) {
+          // 投影到局部流向坐标系：sPar 沿水流方向（<0 迎水，>0 背水），sPerp 垂直水流方向（左右两翼）
+          const sPar = rx * txBase + rz * tzBase;
+          const sPerp = rx * nxBase + rz * nzBase;
+
+          // 1) 迎水驻点与激荡水花区（sPar ∈ [-1.65R, -0.75R]，|sPerp| < 1.15R）
+          if (sPar < -R * 0.65 && sPar > -R * 1.85 && Math.abs(sPerp) < R * 1.25) {
+            const kFront = (1 - Math.abs(sPar + R * 1.15) / (R * 0.72)) * (1 - Math.abs(sPerp) / (R * 1.25));
+            if (kFront > 0) bowSplash = Math.max(bowSplash, kFront * (ob.isWeir ? 0.75 : 1.0));
+          }
+
+          // 2) 石头两侧八字分流加速区（圆柱势流偶极子偏转：水流遇石自动向左右两侧分流绕行）
+          const r2 = Math.max(R * R, dist * dist);
+          const dipoleFactor = (R * R) / r2;
+          const sideSign = sPerp >= 0 ? 1 : -1;
+          // 迎水与侧翼（sPar < 1.2R）向外偏转分流，背水侧（sPar > 1.2R）向中心回流卷入涡街
+          const deflectLat = sPar < R * 1.1
+            ? sideSign * dipoleFactor * 0.95 * Math.exp(-Math.max(0, -sPar - R) * 1.8)
+            : -sideSign * dipoleFactor * 0.45 * Math.exp(-(sPar - R) * 1.2);
+          flowX += nxBase * deflectLat;
+          flowZ += nzBase * deflectLat;
+
+          if (Math.abs(sPar) < R * 1.35 && Math.abs(sPerp) >= R * 0.85 && Math.abs(sPerp) <= R * 2.1) {
+            const kSplit = 1 - Math.abs(Math.abs(sPerp) - R * 1.35) / (R * 0.75);
+            if (kSplit > 0) splitSpeedBoost = Math.max(splitSpeedBoost, kSplit * 0.42);
+          }
+
+          // 3) 石头背水侧卡门涡街漩涡区（sPar ∈ [0.75R, 3.4R]，|sPerp| < 1.35R）
+          if (sPar > R * 0.75 && sPar < R * 3.5 && Math.abs(sPerp) < R * 1.35) {
+            const kWake = (1 - (sPar - R * 0.75) / (R * 2.75)) * (1 - Math.abs(sPerp) / (R * 1.35));
+            if (kWake > 0) wakeVortex = Math.max(wakeVortex, kWake * 0.92);
+          }
         }
       }
 
-      const initWave = isObstacle > 0.5
+      const fLen = Math.hypot(flowX, flowZ) || 1;
+      flowX /= fLen;
+      flowZ /= fLen;
+
+      // 岸边弯道凹岸/石湾回流漩涡补充
+      const bankRatio = Math.abs(x - cx) / Math.max(0.25, half);
+      const poolEdgeEddy = cascadePoolVortex * Math.max(0, Math.min(1, (bankRatio - 0.35) / 0.55)) * 0.65;
+
+      // 综合流速分区 regimeSpeed：
+      // 平缓深潭 ≈ 0.16~0.28，束水急流/石头分流 ≈ 0.48~0.72，小瀑布与迎水激荡 ≈ 0.82~0.98
+      const regimeSpeed = isSolidObstacle
         ? 0
-        : (Math.sin(z * 4.2 + x * 3.1) * 0.012 + Math.cos(z * 7.5 - x * 5.2) * 0.008) * (1 + casFactor * 0.8);
+        : Math.min(
+          0.98,
+          0.16 +
+            slopeFactor * 0.38 +
+            widthConstrict * 0.18 +
+            cascadeRapid * 0.42 +
+            splitSpeedBoost +
+            bowSplash * 0.25
+        );
+
+      const splashAndObstacle = isSolidObstacle
+        ? 1.0
+        : Math.min(0.68, Math.max(bowSplash * 0.64, cascadePlungeSplash * 0.66));
+
+      const vortexAndSplit = isSolidObstacle
+        ? 0.0
+        : Math.min(1.0, Math.max(wakeVortex, poolEdgeEddy, splitSpeedBoost * 0.85));
+
+      const initWave = isSolidObstacle
+        ? 0
+        : (Math.sin(z * 8.5 + x * 6.2) * 0.004 * regimeSpeed + bowSplash * 0.008);
 
       stateData[idx] = initWave;
-      stateData[idx + 1] = initWave * 0.92;
-      stateData[idx + 2] = isObstacle;
-      stateData[idx + 3] = isObstacle > 0.5 ? 0 : Math.min(1, casFactor * 0.65 + stoneProx * 0.55);
+      stateData[idx + 1] = initWave * 0.95;
+      stateData[idx + 2] = isSolidObstacle ? 1.0 : 0.0;
+      stateData[idx + 3] = isSolidObstacle ? 0.0 : Math.min(1, splashAndObstacle + vortexAndSplit * 0.5);
 
-      obstacleData[idx] = 0;
-      obstacleData[idx + 1] = 0;
-      obstacleData[idx + 2] = isObstacle;
-      obstacleData[idx + 3] = Math.min(1, casFactor * 0.75 + stoneProx * 0.45);
+      obstacleData[idx] = Math.max(0, Math.min(1, flowX * 0.5 + 0.5));
+      obstacleData[idx + 1] = regimeSpeed;
+      obstacleData[idx + 2] = splashAndObstacle;
+      obstacleData[idx + 3] = vortexAndSplit;
     }
   }
 
@@ -245,7 +370,7 @@ export function getSweSimulator() {
   let rtB = new THREE.WebGLRenderTarget(SWE_TEX_WIDTH, SWE_TEX_HEIGHT, rtOpts);
   let initializedOnGpu = false;
 
-  // 1) 河床深度与折射离屏缓冲（Refraction & Depth Capture Target）
+  // 1) 河床深度与折射离屏缓冲
   let refractionTarget = new THREE.WebGLRenderTarget(512, 512, {
     format: THREE.RGBAFormat,
     type: THREE.HalfFloatType,
@@ -257,7 +382,7 @@ export function getSweSimulator() {
   refractionTarget.depthTexture.format = THREE.DepthFormat;
   refractionTarget.depthTexture.type = THREE.UnsignedIntType;
 
-  // 2) 实时水面镜面反射离屏缓冲（Planar Reflection Capture Target：捕捉上方翠绿树冠与朱红鸟居倒影）
+  // 2) 实时水面镜面反射离屏缓冲
   let reflectionTarget = new THREE.WebGLRenderTarget(512, 512, {
     format: THREE.RGBAFormat,
     type: THREE.HalfFloatType,
@@ -286,9 +411,9 @@ export function getSweSimulator() {
     uDomainMax: { value: domainMax },
     uTime: { value: 0 },
     uDamping: { value: 0.986 },
-    uWaveSpeed: { value: 1.72 },
+    uWaveSpeed: { value: 1.68 },
     uImpulse: { value: new THREE.Vector3(0, 0, 0) },
-    uImpulseRadius: { value: 0.45 }
+    uImpulseRadius: { value: 0.42 }
   };
 
   const simMat = new THREE.ShaderMaterial({
@@ -307,7 +432,7 @@ export function getSweSimulator() {
   let refractionReady = false;
   let reflectionReady = false;
 
-  function addDrop(worldX, worldZ, strength = 0.024, radius = 0.45) {
+  function addDrop(worldX, worldZ, strength = 0.022, radius = 0.42) {
     simUniforms.uImpulse.value.set(worldX, worldZ, strength);
     simUniforms.uImpulseRadius.value = radius;
   }
@@ -380,7 +505,6 @@ export function getSweSimulator() {
     const wasPuddleVis = puddleRoot ? puddleRoot.visible : true;
     const prevTarget = renderer.getRenderTarget ? renderer.getRenderTarget() : null;
     try {
-      // 1) 渲染水下河床、卵石、沉叶与溪石折射及真实深度纹理（隐藏水面本身）
       if (waterRoot) waterRoot.visible = false;
       if (puddleRoot) puddleRoot.visible = false;
       renderer.setRenderTarget(refractionTarget);
@@ -388,14 +512,12 @@ export function getSweSimulator() {
       renderer.render(scene, camera);
       refractionReady = true;
 
-      // 2) 渲染溪流斜面镜面反射缓冲（捕捉上方树冠与朱红鸟居倒影）
       camPos.setFromMatrixPosition(camera.matrixWorld);
       const e = camera.matrixWorld.elements;
       camFwd.set(-e[8], -e[9], -e[10]).normalize();
       camUp.set(e[4], e[5], e[6]).normalize();
       camTarget.copy(camPos).addScaledVector(camFwd, 12.0);
 
-      // 以当前视角注视段的水面高度作为反射基准面
       const midZ = THREE.MathUtils.clamp(camPos.z * 0.45, -6.0, 10.5);
       planePoint.set(streamCenterX(midZ), waterY(midZ), midZ);
 
@@ -418,7 +540,6 @@ export function getSweSimulator() {
       reflectionCamera.updateMatrixWorld(true);
       reflectionCamera.updateProjectionMatrix();
 
-      // 隐藏地形底壳与底座，防止水下背面遮挡反射相机视线，让反射相机直接拍到上方树木与朱红鸟居
       const wasTerrainVis = terrainRoot ? terrainRoot.visible : true;
       const wasPadVis = padRoot ? padRoot.visible : true;
       if (terrainRoot) terrainRoot.visible = false;
@@ -445,6 +566,9 @@ export function getSweSimulator() {
   sharedSimulator = {
     get texture() {
       return currentTexture;
+    },
+    get hydroMap() {
+      return obstacleTex;
     },
     get refractionColorTex() {
       return refractionTarget.texture;
