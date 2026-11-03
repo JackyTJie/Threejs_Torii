@@ -1,12 +1,8 @@
 // 山林阔叶高树（kaede / 鸟居后上方采光林冠）：9 株（layout.TREES 中 species='kaede'）。
-// 一株 = 树干 3 段 + 根回し盛土 + 3 条板根 + 树皮剥落薄片 ×3 + 树脚青苔 ×2
-//   + 主枝 7 条（每枝 2 段 + 1 侧枝，各自成 Group，供逐枝摆动）
-//   + 叶片簇 16 个（7×2 枝梢簇 + 2 顶冠簇；每簇一个 InstancedMesh，叶片为独立薄片几何体）
-// 叶色配比采用雨后深林嫩绿/苔绿三档（leafSheetMaple / Deep / Light），还原参考图鸟居上方逆光透亮的森林树冠。
 import { TREES, terrainHeight } from '../layout.js';
 import { group, rng, leafBladeGeometry } from '../primitives.js';
 import {
-  makeSpine, buildTrunk, buildBranches, buildCrownClusters, treeNeighbours, SPECIES_REACH
+  makeSpine, buildTrunk, buildBranches, buildCrownClusters, treeNeighbours, SPECIES_REACH, GOLDEN
 } from '../tree-kit.js';
 
 export const KAEDE_MODEL = { canopyRadius: 2.48, canopyBottom: 2.3, height: 6.95, trunkRadius: 0.235 };
@@ -89,9 +85,10 @@ export function createKaedeTree(M, options = {}) {
 
   root.add(buildTrunk(D, spine, mats.bark, mats.flareMat, mats.flakeMat, mats.mossMat, rand));
 
+  const rotY = treeRotationY(seed);
   const { branches, clusterIndex } = buildBranches(
     D, spine, mats.bark, mats.leafMats, leafGeos, rand,
-    avoidFor(options.x, options.z, treeRotationY(seed))
+    avoidFor(options.x, options.z, rotY)
   );
   for (const branch of branches) root.add(branch);
   for (const crown of buildCrownClusters(D, mats.leafMats, leafGeos, rand, clusterIndex)) root.add(crown);
@@ -103,7 +100,7 @@ export function createKaedeTree(M, options = {}) {
   root.userData.treeHeight = KAEDE_MODEL.height * scale;
 
   if (options.x !== undefined && options.z !== undefined) {
-    placeTree(root, options.x, options.z, scale, treeRotationY(seed));
+    placeTree(root, options.x, options.z, scale, rotY, rand);
   }
   return root;
 }
@@ -129,13 +126,18 @@ export function createKaedeGrove(M) {
   return root;
 }
 
-function placeTree(root, x, z, scale, rotY) {
+function placeTree(root, x, z, scale, rotY, rand) {
   root.position.set(x, terrainHeight(x, z) - D.sink * scale, z);
-  root.rotation.y = rotY;
+  root.rotation.set(
+    (rand() - 0.5) * 0.035,
+    rotY,
+    (rand() - 0.5) * 0.035
+  );
 }
 
 function treeRotationY(seed) {
-  return (seed % 9) * 0.7;
+  const r = rng(seed * 41 + 19)();
+  return ((seed * GOLDEN) + r * 1.4) % (Math.PI * 2);
 }
 
 function avoidFor(x, z, rotY) {

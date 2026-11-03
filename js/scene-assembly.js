@@ -1,12 +1,5 @@
 // 场景总组装：按 js/layout.js 的落点把全部资产放进场景，逐资产收尾
 // （阴影策略 + 逐网格独立描边），再把四个静谧动态模块接到已建好的资产根上。
-//
-// 分工约定：
-// - 资产模块（js/assets/**）负责「这个构件长什么样、放在哪、投影不投影」；
-// - 本模块负责「谁在场景里、阴影策略的组级默认、描边壳体、动画接线」；
-// - 动画模块只接已建好的根，不重新建模、不合并网格。
-//
-// 本模块不创建任何界面元素，也不调用 requestAnimationFrame（见 js/main.js）。
 import * as THREE from 'three';
 import assetMap from './asset-map.js';
 import { finishAsset } from './toon.js';
@@ -17,13 +10,6 @@ import { createStreamFlow } from './animations/stream-flow.js';
 import { createPuddleRipple } from './animations/puddle-ripple.js';
 import { createMistDrift } from './animations/mist-drift.js';
 
-/**
- * 组级阴影策略。默认 'fill'：资产层写了 userData.noCast / noReceive 的构件保持不投影 /
- * 不受影，其余构件一律投影 + 受光。
- *
- * terrain 用 'keep'：它自己写了「山带投影、裙墙 / 溪床壁只受光」的不对称决定，
- * 'fill' 会把裙墙也点亮，在底座边缘多出一道不该有的影带。
- */
 const SHADOW_POLICY = {
   terrain: 'keep',
   mist: 'none'
@@ -55,16 +41,8 @@ const ASSEMBLY_ORDER = [
   'mist'
 ];
 
-/** 资产名 -> 场景里的 Group（供审计、单独调位置、动画接线） */
 const assets = new Map();
 
-/**
- * 单独建一个资产并收尾。
- * @param {string} name asset-map 里的资产名
- * @param {object} M 材质库
- * @param {object} options 透传给资产工厂
- * @returns {{root:THREE.Group, shells:THREE.Mesh[]}}
- */
 export function buildAsset(name, M, options = {}) {
   const factory = assetMap[name];
   if (!factory) throw new Error(`scene-assembly: asset-map 里没有资产 ${name}`);
@@ -75,13 +53,6 @@ export function buildAsset(name, M, options = {}) {
   return { root, shells };
 }
 
-/**
- * 组装整个场景。
- * @param {THREE.Scene} scene
- * @param {object} M 材质库（js/materials.js 的 createMaterialLibrary()）
- * @param {{animations?:boolean}} options
- * @returns {{assets:Map, animations:object, stats:object}}
- */
 export function assembleScene(scene, M, options = {}) {
   if (!scene || !scene.isScene) throw new Error('scene-assembly: assembleScene 需要一个 Scene');
   assets.clear();
@@ -113,14 +84,16 @@ export function assembleScene(scene, M, options = {}) {
   /* ---------------- 2. 动画接线（柔和克制，不破坏静谧感） ---------------- */
   const animations = {};
   if (options.animations !== false) {
-    // 乔木枝叶、灌丛、蕨类随微风小幅度缓慢晃动
+    // 乔木枝叶、灌丛、蕨类、以及鸟居横梁注连绳纸垂随微风小幅度异步缓慢摇曳
     animations.treeSway = createTreeSway([
       built.treeKusunoki,
       built.treeSakaki,
       built.treeKaede,
       built.shrub,
       built.fern,
-      built.groundCover
+      built.groundCover,
+      built.toriiFront,
+      built.toriiRear
     ]);
 
     // 溪流水面缓慢流动，带细碎涟漪
@@ -152,7 +125,6 @@ export function assembleScene(scene, M, options = {}) {
   return { assets, animations, stats };
 }
 
-/** 当前场景里已组装的资产表 */
 export function assembledAssets() {
   return assets;
 }

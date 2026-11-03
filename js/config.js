@@ -151,7 +151,7 @@ export const LIGHT = {
   ambientIntensity: 0.24,
 
   fogColor: 0x1b2d23,
-  fogDensity: 0.013
+  fogDensity: 0.0035
 };
 
 /**
@@ -199,6 +199,23 @@ export const CAMERA = {
 export const POST = {
   enabled: true,
   halfResolution: true,
+  ssao: {
+    enabled: true,
+    strength: 1.0,
+    radius: 0.42,
+    bias: 0.028,
+    color: 0x0b1710
+  },
+  heightFog: {
+    enabled: true,
+    color: 0x182b20,
+    sunTint: 0x2e4a3b,
+    density: 0.24,
+    baseY: 1.65,
+    heightFalloff: 0.52,
+    speed: 0.35,
+    noiseAmp: 0.85
+  },
   outline: {
     enabled: true,
     color: PALETTE.outline,
@@ -209,19 +226,19 @@ export const POST = {
   },
   bloom: {
     enabled: true,
-    threshold: 1.25,
-    knee: 0.85,
-    strength: 0.22,
-    radius: 1.4
+    threshold: 1.15,
+    knee: 0.82,
+    strength: 0.24,
+    radius: 1.45
   },
   dof: {
     enabled: true,
-    focusDistance: 16.0,
-    focusRange: 3.6,
-    maxBlurPx: 12,
-    nearWeight: 0.6,
-    farWeight: 0.8,
-    depthFalloff: 0.032,
+    focusDistance: 15.6,
+    focusRange: 3.2,
+    maxBlurPx: 11,
+    nearWeight: 0.68,
+    farWeight: 0.82,
+    depthFalloff: 0.036,
     taps: 16,
     followFocusTarget: true
   },
@@ -229,7 +246,7 @@ export const POST = {
     exposure: 0.96,
     contrast: 1.06,
     saturation: 1.06,
-    lift: 0.02,
+    lift: 0.025,
     gain: 1.0,
     warmth: -0.01,
     lutStrength: 0.82,

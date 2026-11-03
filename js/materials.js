@@ -1,4 +1,4 @@
-// 材质库：六大类材质（木材 / 石材 / 水体 / 叶片 / 树皮 / 泥土）+ 底座 / 青苔 / 茎枝 / 薄雾。
+// 材质库：六大类材质（木材 / 石材 / 水体 / 叶片 / 树皮 / 泥土）+ 底座 / 青苔 / 茎枝 / 薄雾 / 注连绳纸垂。
 import * as THREE from 'three';
 import { PALETTE, ANIM } from './config.js';
 import {
@@ -59,13 +59,14 @@ function stoneStepZone(name, { seed, mossHeight, mossAmount, wearStart, wearBand
     start: wearStart,
     band: wearBand,
     wearAmount: 0.48,
-    dustAmount: 0.22
+    dustAmount: 0.22,
+    roughnessVar: 0.22
   });
   applyMossAttachment(material, {
     color: PALETTE.mossWet,
     height: mossHeight,
-    band: 0.95,
-    amount: mossAmount
+    band: 1.15,
+    amount: mossAmount * 1.28
   });
   applyShadowLift(material, { lift: 0.08, knee: 0.38 });
   return material;
@@ -151,14 +152,15 @@ function makeToriiMaterials({ seed = 23, baseY = 0, shade = 1.0 } = {}) {
   const sByte = Math.max(0, Math.min(255, Math.round(shade * 255)));
   const tintHex = (sByte << 16) | (sByte << 8) | sByte;
 
-  const lacquerRule = (material) => {
+  const lacquerRule = (material, roughnessVar = 0.46) => {
     applyWeathering(material, {
       wear: PALETTE.toriiLacquerLoss,
       dust: PALETTE.soilWet,
       start: baseY,
-      band: 1.25,
-      wearAmount: 0.42,
-      dustAmount: 0.14
+      band: 1.35,
+      wearAmount: 0.46,
+      dustAmount: 0.16,
+      roughnessVar
     });
     applyShadowLift(material, { lift: 0.08, knee: 0.38 });
     return material;
@@ -169,35 +171,41 @@ function makeToriiMaterials({ seed = 23, baseY = 0, shade = 1.0 } = {}) {
     color: tintHex,
     band: 'mid',
     map: paint(PALETTE.toriiVermilion, 0)
-  }), 'toriiLacquer'));
+  }), 'toriiLacquer'), 0.48);
+  applyMossAttachment(T.lacquer, {
+    color: PALETTE.mossWet,
+    height: baseY + 2.88,
+    band: 0.45,
+    amount: 0.28
+  });
 
   T.post = lacquerRule(named(toon({
     color: tintHex,
     band: 'mid',
     map: paint(PALETTE.toriiVermilion, 7)
-  }), 'toriiPost'));
+  }), 'toriiPost'), 0.52);
   applyMossAttachment(T.post, {
     color: PALETTE.mossWet,
-    height: baseY + 0.42,
-    band: 0.75,
-    amount: 0.42
+    height: baseY + 0.65,
+    band: 0.95,
+    amount: 0.54
   });
 
   T.deep = lacquerRule(named(toon({
     color: PALETTE.toriiVermilionDeep, band: 'soft'
-  }), 'toriiVermilionDeep'));
+  }), 'toriiVermilionDeep'), 0.35);
 
   T.fade = lacquerRule(named(toon({
     color: PALETTE.toriiVermilionFade, band: 'mid'
-  }), 'toriiVermilionFade'));
+  }), 'toriiVermilionFade'), 0.32);
 
   T.black = lacquerRule(named(toon({
     color: 0xffffff, band: 'mid', map: paint(PALETTE.toriiBlack, 13)
-  }), 'toriiBlack'));
+  }), 'toriiBlack'), 0.38);
 
   T.blackFade = lacquerRule(named(toon({
     color: PALETTE.toriiBlackFade, band: 'soft'
-  }), 'toriiBlackFade'));
+  }), 'toriiBlackFade'), 0.25);
 
   T.woodBare = named(toon({
     color: 0xffffff,
@@ -241,10 +249,44 @@ function makeToriiMaterials({ seed = 23, baseY = 0, shade = 1.0 } = {}) {
   });
   applyMossAttachment(T.stoneBase, {
     color: PALETTE.moss,
-    height: baseY + 0.2,
-    band: 0.7,
-    amount: 0.45
+    height: baseY + 0.32,
+    band: 0.85,
+    amount: 0.58
   });
+
+  // 注连绳（しめ縄）：粗编稻草绳材质，带自然草茎纹理与微润风化
+  T.shimenawa = named(toon({
+    color: tintHex,
+    band: 'mid',
+    map: woodTexture({
+      size: 512,
+      base: 0xc8ae74,
+      dark: 0x826b3e,
+      light: 0xe3cb96,
+      planks: 12,
+      seed: seed + 43
+    })
+  }), 'toriiShimenawa');
+  applyWeathering(T.shimenawa, {
+    wear: 0x6b5630,
+    dust: PALETTE.soilWet,
+    start: baseY + 2.4,
+    band: 0.65,
+    wearAmount: 0.32,
+    dustAmount: 0.14,
+    roughnessVar: 0.18
+  });
+  applyShadowLift(T.shimenawa, { lift: 0.18, knee: 0.48 });
+
+  // 纸垂（紙垂 / しで）：神圣奉书纸材质，暖白微透光，轮廓鲜明
+  T.shide = named(toon({
+    color: 0xf4f0e4,
+    band: 'soft',
+    side: THREE.DoubleSide
+  }), 'toriiShide');
+  applyLeafTranslucency(T.shide, { color: 0xfff8e6, strength: 0.28, power: 2.2 });
+  applyShadowLift(T.shide, { lift: 0.26, knee: 0.56 });
+
   return T;
 }
 
@@ -334,7 +376,10 @@ export function createMaterialLibrary() {
   }), 'stoneStepWet');
   applyWeathering(M.stoneStepWet, {
     wear: 0x363e42, dust: PALETTE.soilWet, start: 0, band: 1.2,
-    wearAmount: 0.32, dustAmount: 0.16
+    wearAmount: 0.32, dustAmount: 0.16, roughnessVar: 0.28
+  });
+  applyMossAttachment(M.stoneStepWet, {
+    color: PALETTE.mossWet, height: 3.2, band: 1.8, amount: 0.42
   });
   applyShadowLift(M.stoneStepWet, { lift: 0.22, knee: 0.52 });
 

@@ -179,13 +179,14 @@ const KNOWN_THREE = new Set([
   'StreamDrawUsage', 'InterleavedBuffer', 'InterleavedBufferAttribute', 'NoBlending'
 ]);
 
-// 允许直接使用浏览器 DOM API 的模块（渲染 / 输入 / 画布纹理 / 入口）
+// 允许直接使用浏览器 DOM API 的模块（渲染 / 输入 / 画布纹理 / 右下角折叠设置面板 / 入口）
 const DOM_ALLOW = new Set([
   'js/renderer.js',
   'js/scene.js',
   'js/camera.js',
   'js/post-pipeline.js',
   'js/textures.js',
+  'js/ui-panel.js',
   'js/main.js'
 ]);
 

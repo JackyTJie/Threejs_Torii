@@ -4,23 +4,23 @@
  * 32 级台阶，顺着 layout.pathCenterX(z) 的山坡小弧线蜿蜒拾级而上：
  * - 底端从画面右下方坡脚起阶，中段沿山坡微向左抱弯，再自然回摆抵达双鸟居，过鸟居后曲率增大衔接上段山路；
  * - 每级沿 X 切成 2–3 块独立石板（独立 Mesh、独立拓扑，不合并、不实例化）；
- * - 磕碰缺角、表面磨损、青苔与积水洼随弯曲台阶同步偏移。
+ * - 磕碰缺角、边缘破损碎裂、向溪与背阴侧青苔遮罩、以及踏面零散湿落叶随弯曲台阶同步分布。
  */
 import { PATH, frontZ, pathBoundsAt, pathShiftX, pathYaw, stepTopY } from '../layout.js';
-import { group, mesh, place, rng, slabGeometry, triplanarUv } from '../primitives.js';
+import { group, leafSheetGeometry, mesh, place, rng, slabGeometry, triplanarUv } from '../primitives.js';
 
 const UV_TILE = 1.2;
 const BURIAL = 0.06;
-const JOINT_GAP = [0.022, 0.042];
-const CHAMFER_MIN = 0.035;
-const CHAMFER_MAX = 0.115;
-const CHAMFER_EDGE_CAP = 0.4;
-const CHAMFER_ODDS = 0.62;
-const FRONT_CHAMFER_BIAS = 1.35;
-const YAW_MAX = 0.004;
-const JITTER_UP = 0.005;
+const JOINT_GAP = [0.024, 0.046];
+const CHAMFER_MIN = 0.042;
+const CHAMFER_MAX = 0.135;
+const CHAMFER_EDGE_CAP = 0.42;
+const CHAMFER_ODDS = 0.78;
+const FRONT_CHAMFER_BIAS = 1.45;
+const YAW_MAX = 0.005;
+const JITTER_UP = 0.006;
 const MIN_SLAB_WIDTH = 0.62;
-const WET_ODDS = 0.22;
+const WET_ODDS = 0.24;
 
 const lerp = (a, b, t) => a + (b - a) * t;
 
@@ -44,16 +44,28 @@ function chamferedRing(xa, xb, zFront, zBack, rand, { allowChamfer = true } = {}
       continue;
     }
     const base = lerp(CHAMFER_MIN, CHAMFER_MAX, rand()) * (isFront ? FRONT_CHAMFER_BIAS : 1);
-    const dPrev = Math.min(base * lerp(0.55, 1.15, rand()), CHAMFER_EDGE_CAP * Math.hypot(c[0] - prev[0], c[1] - prev[1]));
-    const dNext = Math.min(base * lerp(0.55, 1.15, rand()), CHAMFER_EDGE_CAP * Math.hypot(next[0] - c[0], next[1] - c[1]));
+    const dPrev = Math.min(base * lerp(0.55, 1.22, rand()), CHAMFER_EDGE_CAP * Math.hypot(c[0] - prev[0], c[1] - prev[1]));
+    const dNext = Math.min(base * lerp(0.55, 1.22, rand()), CHAMFER_EDGE_CAP * Math.hypot(next[0] - c[0], next[1] - c[1]));
     if (dPrev < 0.02 || dNext < 0.02) {
       ring.push(c);
       continue;
     }
-    ring.push([c[0] + (prev[0] - c[0]) * (dPrev / Math.hypot(prev[0] - c[0], prev[1] - c[1])),
-      c[1] + (prev[1] - c[1]) * (dPrev / Math.hypot(prev[0] - c[0], prev[1] - c[1]))]);
-    ring.push([c[0] + (next[0] - c[0]) * (dNext / Math.hypot(next[0] - c[0], next[1] - c[1])),
-      c[1] + (next[1] - c[1]) * (dNext / Math.hypot(next[0] - c[0], next[1] - c[1]))]);
+    const p1 = [
+      c[0] + (prev[0] - c[0]) * (dPrev / Math.hypot(prev[0] - c[0], prev[1] - c[1])),
+      c[1] + (prev[1] - c[1]) * (dPrev / Math.hypot(prev[0] - c[0], prev[1] - c[1]))
+    ];
+    const p2 = [
+      c[0] + (next[0] - c[0]) * (dNext / Math.hypot(next[0] - c[0], next[1] - c[1])),
+      c[1] + (next[1] - c[1]) * (dNext / Math.hypot(next[0] - c[0], next[1] - c[1]))
+    ];
+    ring.push(p1);
+    // 前缘角部增加不规则风化内凹破损折点，强化山林荒废石阶的边缘残缺感
+    if (isFront && rand() < 0.52) {
+      const midX = (p1[0] + p2[0]) * 0.5 + (rand() - 0.5) * 0.025;
+      const midZ = (p1[1] + p2[1]) * 0.5 - lerp(0.012, 0.032, rand());
+      ring.push([midX, midZ]);
+    }
+    ring.push(p2);
   }
   return ring;
 }
@@ -94,15 +106,15 @@ export function stepSlabSpans(k) {
 
 function addChips(root, M, k, zFront, top, rand) {
   const roll = rand();
-  const count = roll < 0.2 ? 0 : roll < 0.72 ? 1 : 2;
+  const count = roll < 0.15 ? 0 : roll < 0.65 ? 1 : 2;
   const czStep = zFront - PATH.tread * 0.5;
   const { x0, x1 } = pathBoundsAt(czStep);
   for (let i = 0; i < count; i++) {
-    const w = lerp(0.07, 0.19, rand());
-    const d = lerp(0.05, 0.13, rand());
-    const cx = lerp(x0 + 0.18, x1 - 0.18, rand());
-    const cz = zFront - lerp(0.06, 0.44, rand());
-    const thickness = lerp(0.022, 0.05, rand());
+    const w = lerp(0.07, 0.20, rand());
+    const d = lerp(0.05, 0.14, rand());
+    const cx = lerp(x0 + 0.15, x1 - 0.15, rand());
+    const cz = zFront - lerp(0.04, 0.44, rand());
+    const thickness = lerp(0.022, 0.052, rand());
     const geo = triplanarUv(
       slabGeometry(chamferedRing(-w / 2, w / 2, d / 2, -d / 2, rand, { allowChamfer: false }), thickness),
       0.35,
@@ -113,12 +125,42 @@ function addChips(root, M, k, zFront, top, rand) {
       x: cx,
       y: top + lerp(0.004, 0.016, rand()),
       z: cz - d / 2,
-      ry: lerp(-0.35, 0.35, rand())
+      ry: lerp(-0.45, 0.45, rand())
     });
     chip.castShadow = true;
     chip.receiveShadow = true;
     chip.userData.noOutline = true;
     root.add(chip);
+  }
+}
+
+/** 石阶踏面与石缝处点缀零散湿润落叶，靠近溪流一侧与阶根背阴角略多，强化山林荒废感 */
+function addStepLeaves(root, M, k, zFront, top, leafGeos, leafMats) {
+  const lRand = rng(k * 1319 + 79);
+  const count = lRand() < 0.32 ? 1 : lRand() < 0.82 ? 2 : 3;
+  const czStep = zFront - PATH.tread * 0.5;
+  const { x0, x1 } = pathBoundsAt(czStep);
+  for (let i = 0; i < count; i++) {
+    // 偏向左侧溪流岸（u^1.35）或台阶内角背阴处
+    const u = Math.pow(lRand(), 1.35);
+    const lx = lerp(x0 + 0.14, x1 - 0.14, u);
+    const lz = zFront - lerp(0.08, PATH.tread - 0.07, lRand());
+    const geo = leafGeos[(k + i) % leafGeos.length];
+    const mat = leafMats[(k * 3 + i) % leafMats.length];
+    const leaf = mesh(geo, mat, `stepLeaf-${k}-${i}`);
+    leaf.position.set(lx, top + 0.009 + lRand() * 0.005, lz);
+    leaf.rotation.set(
+      -Math.PI / 2 + (lRand() - 0.5) * 0.14,
+      lRand() * Math.PI * 2,
+      (lRand() - 0.5) * 0.14
+    );
+    const s = 0.72 + lRand() * 0.46;
+    leaf.scale.setScalar(s);
+    leaf.castShadow = false;
+    leaf.receiveShadow = true;
+    leaf.userData.noCast = true;
+    leaf.userData.noOutline = true;
+    root.add(leaf);
   }
 }
 
@@ -128,6 +170,19 @@ export function createStoneSteps(M, options = {}) {
   const steps = options.steps ?? PATH.steps;
   const samples = [];
   let slabCount = 0;
+
+  const stepLeafGeos = [
+    leafSheetGeometry({ kind: 'maple', size: 0.085, thickness: 0.003, curl: 0.22, steps: 20 }),
+    leafSheetGeometry({ kind: 'beech', size: 0.078, thickness: 0.003, curl: 0.18, steps: 18 }),
+    leafSheetGeometry({ kind: 'maple', size: 0.072, thickness: 0.003, curl: 0.25, steps: 18 })
+  ];
+  const stepLeafMats = [
+    M.leafSheetGroundRust,
+    M.leafSheetGround,
+    M.leafSheetGroundLight,
+    M.leafSheetGroundWet,
+    M.leafSheetFloatingAmber || M.leafSheetGroundRust
+  ];
 
   for (let k = 0; k < steps; k++) {
     const rand = rng(k * 977 + 13);
@@ -161,6 +216,7 @@ export function createStoneSteps(M, options = {}) {
     }
 
     addChips(root, M, k, zFront, top, rand);
+    addStepLeaves(root, M, k, zFront, top, stepLeafGeos, stepLeafMats);
   }
 
   root.userData.samples = samples;

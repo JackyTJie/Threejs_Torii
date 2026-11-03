@@ -1,9 +1,8 @@
 // 入口：全工程唯一使用 requestAnimationFrame 的模块。
 //
-// 这里只做四件事：建渲染器 / 场景 / 相机 / 灯光，把资产交给 scene-assembly 组装，
-// 挂载水面屏幕射线实时物理交互波纹（点击或划过山涧水面激起 SWE 浅水方程扩散与绕石反弹波），
-// 然后每帧按固定顺序推进：相机 → 动画 → 后处理（含 SWE GPU Ping-Pong 迭代与深度折射通道）。
-// 画面里没有任何界面元素：不创建 DOM、不写文字、不加控件。
+// 这里负责：建渲染器 / 场景 / 相机 / 灯光，把资产交给 scene-assembly 组装，
+// 挂载水面屏幕射线实时物理交互波纹、动态昼夜切换系统与右下角圆球形设置图标面板，
+// 然后每帧按固定顺序推进：相机 → 昼夜与动态效果 → 后处理（含 SWE GPU Ping-Pong、SSAO、分层高度雾、鸟居景深 DOF 与辉光）。
 import * as THREE from 'three';
 import { createRenderer, resizeRenderer, drawingBufferSize } from './renderer.js';
 import { createScene } from './scene.js';
@@ -16,6 +15,8 @@ import { outlinePixelScale, setOutlinePixelScale } from './outline.js';
 import { animationElapsed, stepAnimations } from './animations/registry.js';
 import { streamBankHalf, streamCenterX, waterY } from './layout.js';
 import { getSweSimulator } from './water/swe-simulator.js';
+import { createDayNightSystem } from './day-night.js';
+import { createSettingsPanel } from './ui-panel.js';
 
 /** 单帧最大步长：切后台 / 断点回来不补算大跳帧 */
 const MAX_FRAME_DELTA = 1 / 20;
@@ -23,7 +24,7 @@ const MAX_FRAME_DELTA = 1 / 20;
 /**
  * 建立整个应用。与浏览器解耦：canvas 由调用方给，方便离线复现同一帧构图。
  * @param {HTMLCanvasElement} canvas
- * @param {{animations?:boolean}} options
+ * @param {{animations?:boolean, ui?:boolean}} options
  */
 export function createApp(canvas, options = {}) {
   const renderer = createRenderer(canvas);
@@ -35,6 +36,12 @@ export function createApp(canvas, options = {}) {
   const assembly = assembleScene(scene, materials, { animations: options.animations !== false });
   const post = createPostPipeline(renderer, scene, camera);
   const swe = getSweSimulator();
+  const dayNight = createDayNightSystem({ scene, lighting, post });
+  const ui = options.ui === false ? null : createSettingsPanel({
+    post,
+    dayNight,
+    animations: assembly.animations
+  });
 
   // 阶段一.3：屏幕射线步进（Raycasting）交互输入机制 —— 将指针位置反投影为三维视线并与山涧曲面求交，写入 SWE 高度增量
   const rayDir = new THREE.Vector3();
@@ -123,11 +130,12 @@ export function createApp(canvas, options = {}) {
     // 1) 受限观景相机（阻尼 / 缩放耦合注视点 / 后退防超模硬锁 / 防穿地保护）
     rig.update(seconds);
 
-    // 2) 动态效果（微风枝叶摇曳 / 溪流 SWE 与拉格朗日粒子推进 / 积水微澜 / 林间薄雾漂移）
+    // 2) 动态昼夜流转（若开启自动流转）与微风枝叶/纸垂摇曳、溪流 SWE 与漂浮落叶、积水微澜、薄雾漂移
+    dayNight.step(seconds);
     const stepped = stepAnimations(seconds);
     if (stepped.errors.length) console.error('[animations]', stepped.errors.join(' | '));
 
-    // 3) 后处理：SWE 物理迭代 → 河床深度折射通道 → 描边深度边缘 → 景深 → 辉光 → 合成 → 调色
+    // 3) 后处理：SWE 物理迭代 → 河床深度折射通道 → SSAO 与分层动态高度雾 → 描边深度边缘 → 鸟居景深 DOF → 辉光 → 合成 → 调色
     post.render(animationElapsed());
     frames += 1;
   }
@@ -152,6 +160,7 @@ export function createApp(canvas, options = {}) {
     window.removeEventListener('resize', onResize);
     canvas.removeEventListener('pointermove', onWaterPointerMove);
     canvas.removeEventListener('pointerdown', onWaterPointerDown);
+    if (ui) ui.dispose();
     rig.dispose();
     post.dispose();
     renderer.dispose();
@@ -166,6 +175,8 @@ export function createApp(canvas, options = {}) {
     materials,
     post,
     swe,
+    dayNight,
+    ui,
     assets: assembly.assets,
     animations: assembly.animations,
     stats: assembly.stats,

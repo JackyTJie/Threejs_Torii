@@ -1,4 +1,4 @@
-// 三渲二着色扩展：半兰伯特漫反射、色阶带、叶片次表面透光、青苔附着
+// 三渲二着色扩展：半兰伯特漫反射、色阶带、叶片次表面透光、向溪背阴青苔附着、风化与漆面微粗糙度高光
 // 这些 GLSL 片段通过 material.onBeforeCompile 注入 MeshToonMaterial，
 // 保持 Three.js 内置光照模型的同时获得卡通分层与透光特性。
 
@@ -35,7 +35,6 @@ export const LEAF_TRANSLUCENCY_FRAG = /* glsl */ `
   // viewDir = 由叶片指向眼睛（three.js 的 vViewPosition 就是这个方向）。
   // 透射成立的条件是「光子行进方向」与「出射到眼睛的方向」大致同向 ——
   // 即眼睛、叶片、太阳排成一条线，镜头朝向太阳看时叶子最亮。
-  // 写成 dot( viewDir, -sunTravel ) 会把最该发亮的逆光视角判成 0，顺光时反而发亮。
   vec3 leafTranslucency( vec3 normal, vec3 viewDir, vec3 sunTravel, vec3 lightColor, float lightIntensity ) {
     float back = dot( viewDir, sunTravel );
     back = pow( clamp( back, 0.0, 1.0 ), uTranslucencyPower );
@@ -45,7 +44,7 @@ export const LEAF_TRANSLUCENCY_FRAG = /* glsl */ `
   }
 `;
 
-/** 青苔附着：按高度与背阴程度在构件底部混合青苔色 */
+/** 青苔附着：遵循「靠近溪流处多（-x 侧）、背阴处多、向阳处少」的空间分布逻辑 */
 export const MOSS_ATTACHMENT_UNIFORMS = /* glsl */ `
   uniform vec3 uMossColor;
   uniform float uMossHeight;
@@ -80,27 +79,35 @@ export const MOSS_ATTACHMENT_FRAG = /* glsl */ `
     );
   }
 
-  // 同时支持构件根部微润青苔与山石顶面折平台自然青苔斑块（绝不把整块石头刷成绿球，侧面劈理折面保持干净山石本色）
+  // 同时支持构件根部微润青苔与踏面/山石顶面青苔斑块：
+  // 严格遵循「靠近溪流处（worldPos.x 偏左负向）多、背阴处多、向阳处少」的分布逻辑
   vec3 applyMoss( vec3 baseColor, vec3 worldPos, vec3 normal, vec3 sunDir ) {
     vec3 nrm = normalize( normal );
     float heightFade = 1.0 - clamp( ( worldPos.y - uMossHeight ) / max( uMossBand, 0.001 ), 0.0, 1.0 );
-    float shade = clamp( 0.5 + 0.5 * dot( nrm, sunDir ), 0.0, 1.0 );
+    // sunDir 为从光源指向场景的方向，因此 dot(nrm, sunDir) > 0 代表背阴面，< 0 代表向阳面
+    float shade = clamp( 0.55 + 0.65 * dot( nrm, sunDir ), 0.0, 1.0 );
+    float sunlitSuppress = smoothstep( -0.55, 0.25, dot( nrm, sunDir ) );
+    // 靠近左侧山涧溪流（x < 0.2）湿度高，青苔覆盖显著增加；向右侧阳坡递减
+    float streamBias = 0.62 + 0.68 * smoothstep( 1.85, -1.65, worldPos.x );
+
     float n1 = mossNoise3( worldPos * 4.2 );
     float n2 = mossNoise3( worldPos * 10.5 + vec3( 7.3, 2.1, 5.4 ) );
     float organic = n1 * 0.65 + n2 * 0.35;
 
-    // 仅在朝上的岩石平台面（nrm.y > 0.48）生成团簇状青苔垫，立面与斜劈理面露出干净岩石纹理
-    float topFacing = smoothstep( 0.48, 0.82, nrm.y );
-    float topPatch = smoothstep( 0.46, 0.72, organic + topFacing * 0.16 ) * topFacing;
-    float baseMask = heightFade * ( 0.35 + 0.45 * shade ) * smoothstep( 0.45, 0.75, organic ) * 0.45;
-    float mask = clamp( max( baseMask, topPatch * 0.85 ) * uMossAmount, 0.0, 0.72 );
+    // 朝上的踏面/岩石平台面（nrm.y > 0.45）在向溪侧与背阴侧生成自然团簇青苔垫
+    float topFacing = smoothstep( 0.45, 0.82, nrm.y );
+    float topPatch = smoothstep( 0.42, 0.68, organic + topFacing * 0.14 + ( streamBias - 0.85 ) * 0.18 )
+      * topFacing * sunlitSuppress * streamBias;
+    // 构件底部与石缝潮湿青苔
+    float baseMask = heightFade * ( 0.32 + 0.68 * shade ) * streamBias * smoothstep( 0.42, 0.72, organic ) * 0.54;
+    float mask = clamp( max( baseMask, topPatch * 0.88 ) * uMossAmount, 0.0, 0.76 );
 
-    vec3 lushMoss = mix( uMossColor * 0.78, uMossColor * vec3( 1.08, 1.16, 0.92 ), clamp( nrm.y * 0.5 + organic * 0.5, 0.0, 1.0 ) );
+    vec3 lushMoss = mix( uMossColor * 0.76, uMossColor * vec3( 1.08, 1.18, 0.90 ), clamp( nrm.y * 0.5 + organic * 0.5, 0.0, 1.0 ) );
     return mix( baseColor, lushMoss, mask );
   }
 `;
 
-/** 风化老化：底部与迎风面优先老化、顶面轻微积尘 */
+/** 风化老化与微粗糙度高光：底部与缝隙风化、顶面积尘、漆面/石面粗糙度细微差异与不均匀高光 */
 export const WEATHERING_UNIFORMS = /* glsl */ `
   uniform vec3 uWearColor;
   uniform vec3 uDustColor;
@@ -108,6 +115,8 @@ export const WEATHERING_UNIFORMS = /* glsl */ `
   uniform float uWearBand;
   uniform float uWearAmount;
   uniform float uDustAmount;
+  uniform float uRoughnessVar;
+  uniform vec3 uSpecSunDir;
 `;
 
 export const WEATHERING_FRAG = /* glsl */ `
@@ -115,13 +124,35 @@ export const WEATHERING_FRAG = /* glsl */ `
     return fract( sin( dot( floor( p * 13.0 ), vec3( 39.3468, 11.135, 27.719 ) ) ) * 24634.6345 );
   }
 
-  vec3 applyWeathering( vec3 baseColor, vec3 worldPos, vec3 normal ) {
+  float smoothWearNoise( vec3 p ) {
+    vec3 i = floor( p );
+    vec3 f = fract( p );
+    f = f * f * ( 3.0 - 2.0 * f );
+    float a = fract( sin( dot( i, vec3( 39.3468, 11.135, 27.719 ) ) ) * 24634.6345 );
+    float b = fract( sin( dot( i + vec3( 1.0, 0.0, 0.0 ), vec3( 39.3468, 11.135, 27.719 ) ) ) * 24634.6345 );
+    float c = fract( sin( dot( i + vec3( 0.0, 1.0, 0.0 ), vec3( 39.3468, 11.135, 27.719 ) ) ) * 24634.6345 );
+    float d = fract( sin( dot( i + vec3( 1.0, 1.0, 0.0 ), vec3( 39.3468, 11.135, 27.719 ) ) ) * 24634.6345 );
+    return mix( mix( a, b, f.x ), mix( c, d, f.x ), f.y );
+  }
+
+  vec3 applyWeathering( vec3 baseColor, vec3 worldPos, vec3 normal, vec3 viewDir ) {
     float bottom = 1.0 - clamp( ( worldPos.y - uWearStart ) / max( uWearBand, 0.001 ), 0.0, 1.0 );
     float n = wearNoise( worldPos );
-    float wear = clamp( bottom * ( 0.5 + 0.9 * n ) * uWearAmount, 0.0, 1.0 );
+    float grain = smoothWearNoise( worldPos * vec3( 6.5, 18.0, 6.5 ) );
+    float wear = clamp( ( bottom * ( 0.48 + 0.88 * n ) + ( 1.0 - grain ) * 0.22 ) * uWearAmount, 0.0, 1.0 );
     float top = clamp( normal.y, 0.0, 1.0 ) * ( 0.4 + 0.6 * n ) * uDustAmount;
     vec3 c = mix( baseColor, uWearColor, wear );
     c = mix( c, uDustColor, clamp( top, 0.0, 1.0 ) );
+
+    // 漆面/湿润表面微粗糙度差异化高光：未剥落处温润微亮，剥落磨损处哑光粗糙，形成自然不均匀高光
+    if ( uRoughnessVar > 0.001 ) {
+      vec3 lightToEye = normalize( -uSpecSunDir );
+      vec3 halfVec = normalize( lightToEye + normalize( viewDir ) );
+      float ndh = max( 0.0, dot( normalize( normal ), halfVec ) );
+      float microGloss = mix( 10.0, 38.0, grain * ( 1.0 - wear * 0.75 ) );
+      float spec = pow( ndh, microGloss ) * ( 0.35 + 0.65 * grain ) * ( 1.0 - wear * 0.82 );
+      c += ( baseColor * 0.45 + vec3( 0.16, 0.14, 0.12 ) ) * spec * uRoughnessVar * 0.28;
+    }
     return c;
   }
 `;

@@ -1,11 +1,8 @@
 // 榊（sakaki / さかき）：神社境内的神圣小叶常绿树，8 株（layout.TREES 中 species='sakaki'）。
-// 一株 = 树干 3 段 + 根回し盛土 + 3 条板根 + 树皮剥落薄片 ×2 + 树脚青苔 ×2
-//   + 主枝 7 条（每枝 2 段 + 1 侧枝，各自成 Group，供逐枝摆动）
-//   + 叶片簇 16 个（7×2 枝梢簇 + 2 顶冠簇；每簇一个 InstancedMesh，叶片为独立薄片几何体）
 import { TREES, terrainHeight } from '../layout.js';
 import { group, rng, leafBladeGeometry } from '../primitives.js';
 import {
-  makeSpine, buildTrunk, buildBranches, buildCrownClusters, treeNeighbours, SPECIES_REACH
+  makeSpine, buildTrunk, buildBranches, buildCrownClusters, treeNeighbours, SPECIES_REACH, GOLDEN
 } from '../tree-kit.js';
 
 export const SAKAKI_MODEL = { canopyRadius: 1.72, canopyBottom: 1.95, height: 5.5, trunkRadius: 0.155 };
@@ -88,9 +85,10 @@ export function createSakakiTree(M, options = {}) {
 
   root.add(buildTrunk(D, spine, mats.bark, mats.flareMat, mats.flakeMat, mats.mossMat, rand));
 
+  const rotY = treeRotationY(seed);
   const { branches, clusterIndex } = buildBranches(
     D, spine, mats.bark, mats.leafMats, leafGeos, rand,
-    avoidFor(options.x, options.z, treeRotationY(seed))
+    avoidFor(options.x, options.z, rotY)
   );
   for (const branch of branches) root.add(branch);
   for (const crown of buildCrownClusters(D, mats.leafMats, leafGeos, rand, clusterIndex)) root.add(crown);
@@ -102,7 +100,7 @@ export function createSakakiTree(M, options = {}) {
   root.userData.treeHeight = SAKAKI_MODEL.height * scale;
 
   if (options.x !== undefined && options.z !== undefined) {
-    placeTree(root, options.x, options.z, scale, treeRotationY(seed));
+    placeTree(root, options.x, options.z, scale, rotY, rand);
   }
   return root;
 }
@@ -128,13 +126,18 @@ export function createSakakiGrove(M) {
   return root;
 }
 
-function placeTree(root, x, z, scale, rotY) {
+function placeTree(root, x, z, scale, rotY, rand) {
   root.position.set(x, terrainHeight(x, z) - D.sink * scale, z);
-  root.rotation.y = rotY;
+  root.rotation.set(
+    (rand() - 0.5) * 0.036,
+    rotY,
+    (rand() - 0.5) * 0.036
+  );
 }
 
 function treeRotationY(seed) {
-  return (seed % 9) * 0.7;
+  const r = rng(seed * 37 + 11)();
+  return ((seed * GOLDEN) + r * 1.35) % (Math.PI * 2);
 }
 
 function avoidFor(x, z, rotY) {

@@ -1,11 +1,12 @@
-// 后处理管线：描边（反向壳体 + 深度边缘）→ 景深 → 辉光 → 合成 → 暖秋日调色
-// 全部为离屏 pass，不产生任何界面元素。
+// 后处理管线：SSAO 环境光遮蔽 + 分层动态高度雾 → 描边（反向壳体 + 深度边缘）→ 鸟居焦点景深 DOF → Bloom 辉光 → 合成 → 电影级调色
+// 全部为离屏 pass，支持昼夜循环与设置面板实时无级调参。
 import * as THREE from 'three';
-import { POST, PALETTE, RENDER, OUTLINE } from './config.js';
+import { POST, PALETTE, OUTLINE } from './config.js';
 import { configuredToneMapping } from './renderer.js';
 import { DOF_FOCUS } from './layout.js';
 import { QUAD_VS, EDGE_FS } from './shaders/outline-shader.js';
 import { setOutlineDistanceRange } from './outline.js';
+import { SSAO_FOG_FS } from './shaders/ssao-shader.js';
 import { DOF_GATHER_FS, DOF_COMPOSITE_FS } from './shaders/dof-shader.js';
 import { GRADE_FS } from './shaders/grade-shader.js';
 import { BRIGHT_FS, BLUR_FS, COMPOSITE_FS } from './shaders/bloom-shader.js';
@@ -29,12 +30,12 @@ export function createPostPipeline(renderer, scene, camera) {
   const passes = {};
   let dofUniforms = null;
 
-  /** 景深焦点：站房南立面中心（相机环绕 / 拉进 / 平移观察点都不会把焦点带走） */
+  /** 景深焦点：画面中心朱红鸟居（相机环绕 / 缩放时始终对焦于红色鸟居主体） */
   const focusPoint = new THREE.Vector3(DOF_FOCUS.x, DOF_FOCUS.y, DOF_FOCUS.z);
 
   /** 最大弥散半径按实际画面高度缩放，保证 1080p 与 4K 得到同样的观感 */
   function dofMaxBlurPx() {
-    return Math.max(1, POST.dof.maxBlurPx * (height / 1080));
+    return Math.max(0, POST.dof.maxBlurPx * state.dofScale * (height / 1080));
   }
 
   function makeTarget(w, h, withDepth) {
@@ -68,12 +69,21 @@ export function createPostPipeline(renderer, scene, camera) {
     return { scene: passScene, material };
   }
 
+  const state = {
+    focusDistance: POST.dof.focusDistance,
+    followFocusTarget: POST.dof.followFocusTarget,
+    dofScale: 1.0,
+    enabled: POST.enabled,
+    frames: 0
+  };
+
   function buildTargets() {
     for (const key of Object.keys(targets)) targets[key].dispose();
     const halfW = POST.halfResolution ? Math.max(1, Math.floor(width / 2)) : width;
     const halfH = POST.halfResolution ? Math.max(1, Math.floor(height / 2)) : height;
 
     targets.scene = makeTarget(width, height, true);
+    targets.ssaoFog = makeTarget(width, height, false);
     targets.edge = makeTarget(width, height, false);
     targets.dof = makeTarget(width, height, false);
     targets.dofA = makeTarget(width, height, false);
@@ -83,6 +93,35 @@ export function createPostPipeline(renderer, scene, camera) {
     targets.blurB = makeTarget(halfW, halfH, false);
     targets.composite = makeTarget(width, height, false);
 
+    // 1) SSAO 环境光遮蔽 + 世界空间分层流动高度雾
+    passes.ssaoFog = makePass(SSAO_FOG_FS, {
+      tScene: { value: null },
+      tDepth: { value: null },
+      uTexel: { value: new THREE.Vector2(1 / width, 1 / height) },
+      uResolution: { value: new THREE.Vector2(width, height) },
+      uCameraNear: { value: camera.near },
+      uCameraFar: { value: camera.far },
+      uProjScale: { value: 1 / Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5) },
+      uAspect: { value: width / Math.max(1, height) },
+      uInvViewMatrix: { value: new THREE.Matrix4() },
+      uCameraPos: { value: new THREE.Vector3() },
+      uSsaoEnabled: { value: POST.ssao.enabled ? 1.0 : 0.0 },
+      uSsaoStrength: { value: POST.ssao.strength },
+      uSsaoRadius: { value: POST.ssao.radius },
+      uSsaoBias: { value: POST.ssao.bias },
+      uSsaoColor: { value: new THREE.Color(POST.ssao.color) },
+      uFogEnabled: { value: POST.heightFog.enabled ? 1.0 : 0.0 },
+      uFogColor: { value: new THREE.Color(POST.heightFog.color) },
+      uFogSunTint: { value: new THREE.Color(POST.heightFog.sunTint) },
+      uFogDensity: { value: POST.heightFog.density },
+      uFogBaseY: { value: POST.heightFog.baseY },
+      uFogHeightFalloff: { value: POST.heightFog.heightFalloff },
+      uFogSpeed: { value: POST.heightFog.speed },
+      uFogNoiseAmp: { value: POST.heightFog.noiseAmp },
+      uTime: { value: 0 }
+    });
+
+    // 2) 深度边缘描边
     passes.edge = makePass(EDGE_FS, {
       tScene: { value: null },
       tDepth: { value: null },
@@ -91,8 +130,6 @@ export function createPostPipeline(renderer, scene, camera) {
       uCameraFar: { value: 400 },
       uThreshold: { value: POST.outline.edgeThreshold },
       uStrength: { value: POST.outline.edgeStrength },
-      // 距离拐点与反向壳体同源（OUTLINE）：两路不同步就会出现「壳体还在、
-      // 边缘检测先掉线」的半截描边
       uNearDistance: { value: OUTLINE.nearDistance },
       uFarDistance: { value: OUTLINE.farDistance },
       uNearWeight: { value: POST.outline.edgeNearWeight },
@@ -100,7 +137,7 @@ export function createPostPipeline(renderer, scene, camera) {
       uOutlineColor: { value: new THREE.Color(POST.outline.color) }
     });
 
-    // 景深三趟共用同一批 uniform 句柄：改一次三趟一起变，不会出现某趟留在旧值上。
+    // 3) 景深三趟共用同一批 uniform 句柄（焦点锁定在中心朱红鸟居）
     dofUniforms = {
       tDepth: { value: null },
       uTexel: { value: new THREE.Vector2(1 / width, 1 / height) },
@@ -117,7 +154,6 @@ export function createPostPipeline(renderer, scene, camera) {
     passes.dofH = makePass(DOF_GATHER_FS, Object.assign({ tScene: { value: null }, uAxis: { value: 0 } }, dofUniforms));
     passes.dofV = makePass(DOF_GATHER_FS, Object.assign({ tScene: { value: null }, uAxis: { value: 1 } }, dofUniforms));
     passes.dofMix = makePass(DOF_COMPOSITE_FS, Object.assign({ tSharp: { value: null }, tBlurred: { value: null } }, dofUniforms));
-    // 合成趟不采样方向，但共用同一批 uniform，uAxis 给 0 保持声明完整
     passes.dofMix.material.uniforms.uAxis = { value: 0 };
 
     passes.bright = makePass(BRIGHT_FS, {
@@ -169,14 +205,7 @@ export function createPostPipeline(renderer, scene, camera) {
     height = Math.max(1, Math.floor(size.y * pr));
   }
 
-  const state = {
-    focusDistance: POST.dof.focusDistance,
-    followFocusTarget: POST.dof.followFocusTarget,
-    enabled: POST.enabled,
-    frames: 0
-  };
-
-  /** 焦平面到相机的距离：默认锁站房南立面；关掉跟随时用手动值 */
+  /** 焦平面到相机的距离：默认锁画面中心朱红鸟居；关掉跟随时用手动值 */
   function focusDistanceFor(cam) {
     if (!state.followFocusTarget) return state.focusDistance;
     return Math.max(0.1, cam.position.distanceTo(focusPoint));
@@ -190,11 +219,6 @@ export function createPostPipeline(renderer, scene, camera) {
     renderer.render(pass.scene, quadCamera);
   }
 
-  /**
-   * 退回直接渲染（后处理关闭或不可用时）。
-   * 此时必须临时把色调映射交回渲染器 —— 否则内置材质直接画到屏幕，
-   * 线性 HDR 被原样 clamp 进 0..1，画面发暗且高光削平。
-   */
   function renderDirect() {
     const previous = renderer.toneMapping;
     const previousExposure = renderer.toneMappingExposure;
@@ -208,7 +232,7 @@ export function createPostPipeline(renderer, scene, camera) {
 
   /**
    * 渲染一帧。
-   * @param {number} elapsed 累计时间（秒），用于调色颗粒动画
+   * @param {number} elapsed 累计时间（秒）
    */
   function render(elapsed) {
     if (!state.enabled) {
@@ -217,7 +241,7 @@ export function createPostPipeline(renderer, scene, camera) {
     }
 
     try {
-      // 0) 阶段一 & 阶段三：推进 GPU 浅水方程（SWE）Ping-Pong 迭代 + 捕获水下河床深度与折射缓冲
+      // 0) 推进 GPU 浅水方程（SWE）Ping-Pong 迭代 + 捕获水下河床深度折射与平面镜面反射缓冲
       const swe = getSweSimulator();
       swe.resizeRefraction(width, height);
       const sweTex = swe.step(renderer, elapsed);
@@ -244,18 +268,34 @@ export function createPostPipeline(renderer, scene, camera) {
       const near = camera.near;
       const far = camera.far;
 
-      // 2) 深度边缘描边
+      // 2) SSAO 环境光遮蔽 + 世界空间分层流动高度雾
+      camera.updateMatrixWorld();
+      const sfU = passes.ssaoFog.material.uniforms;
+      sfU.tScene.value = targets.scene.texture;
+      sfU.tDepth.value = targets.scene.depthTexture;
+      sfU.uCameraNear.value = near;
+      sfU.uCameraFar.value = far;
+      sfU.uProjScale.value = 1 / Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5);
+      sfU.uAspect.value = width / Math.max(1, height);
+      sfU.uInvViewMatrix.value.copy(camera.matrixWorld);
+      sfU.uCameraPos.value.setFromMatrixPosition(camera.matrixWorld);
+      sfU.uTime.value = elapsed;
+      blit(passes.ssaoFog, targets.ssaoFog);
+
+      // 3) 深度边缘描边
       if (POST.outline.enabled) {
-        passes.edge.material.uniforms.tScene.value = targets.scene.texture;
+        passes.edge.material.uniforms.tScene.value = targets.ssaoFog.texture;
         passes.edge.material.uniforms.tDepth.value = targets.scene.depthTexture;
         passes.edge.material.uniforms.uCameraNear.value = near;
         passes.edge.material.uniforms.uCameraFar.value = far;
         blit(passes.edge, targets.edge);
       }
 
-      // 3) 景深：横向 gather → 纵向 gather → 锐 / 糊按 CoC 混合
-      if (POST.dof.enabled) {
-        const sharpSource = POST.outline.enabled ? targets.edge.texture : targets.scene.texture;
+      const sharpSource = POST.outline.enabled ? targets.edge.texture : targets.ssaoFog.texture;
+
+      // 4) 景深（焦点锁定在中心红色鸟居）：横向 gather → 纵向 gather → 锐 / 糊按 CoC 混合
+      const dofActive = POST.dof.enabled && state.dofScale > 0.01;
+      if (dofActive) {
         const u = dofUniforms;
         u.tDepth.value = targets.scene.depthTexture;
         u.uCameraNear.value = near;
@@ -275,9 +315,11 @@ export function createPostPipeline(renderer, scene, camera) {
         blit(passes.dofMix, targets.dof);
       }
 
-      // 4) 辉光
+      const preBloomTex = dofActive ? targets.dof.texture : sharpSource;
+
+      // 5) Bloom 辉光
       if (POST.bloom.enabled) {
-        passes.bright.material.uniforms.tScene.value = POST.dof.enabled ? targets.dof.texture : targets.scene.texture;
+        passes.bright.material.uniforms.tScene.value = preBloomTex;
         blit(passes.bright, targets.bright);
 
         passes.blurA.material.uniforms.tScene.value = targets.bright.texture;
@@ -287,24 +329,19 @@ export function createPostPipeline(renderer, scene, camera) {
         blit(passes.blurB, targets.blurB);
       }
 
-      // 5) 合成
-      passes.composite.material.uniforms.tScene.value = POST.dof.enabled
-        ? targets.dof.texture
-        : POST.outline.enabled
-          ? targets.edge.texture
-          : targets.scene.texture;
+      // 6) 合成
+      passes.composite.material.uniforms.tScene.value = preBloomTex;
       passes.composite.material.uniforms.tBloom.value = POST.bloom.enabled ? targets.blurB.texture : null;
       passes.composite.material.uniforms.uBloomStrength.value = POST.bloom.enabled ? POST.bloom.strength : 0;
       blit(passes.composite, targets.composite);
 
-      // 6) 调色 → 屏幕
+      // 7) 调色 → 屏幕
       passes.grade.material.uniforms.tScene.value = targets.composite.texture;
       passes.grade.material.uniforms.uTime.value = elapsed;
       blit(passes.grade, null);
 
       state.frames++;
-    } catch (err) {
-      // 后处理不可用时退回直接渲染，保证画面始终可见
+    } catch (_err) {
       state.enabled = false;
       renderDirect();
     }
@@ -323,12 +360,52 @@ export function createPostPipeline(renderer, scene, camera) {
     setEnabled(v) {
       state.enabled = v;
     },
-    /** 焦点距离由相机模块或调校脚本提供（默认锁定站房南立面） */
+    setSsaoEnabled(v) {
+      POST.ssao.enabled = !!v;
+      passes.ssaoFog.material.uniforms.uSsaoEnabled.value = v ? 1.0 : 0.0;
+    },
+    setSsaoStrength(v) {
+      POST.ssao.strength = Math.max(0, v);
+      passes.ssaoFog.material.uniforms.uSsaoStrength.value = POST.ssao.strength;
+    },
+    setSsaoRadius(v) {
+      POST.ssao.radius = Math.max(0.05, v);
+      passes.ssaoFog.material.uniforms.uSsaoRadius.value = POST.ssao.radius;
+    },
+    setFogEnabled(v) {
+      POST.heightFog.enabled = !!v;
+      passes.ssaoFog.material.uniforms.uFogEnabled.value = v ? 1.0 : 0.0;
+    },
+    setHeightFogDensity(v) {
+      POST.heightFog.density = Math.max(0, v);
+      passes.ssaoFog.material.uniforms.uFogDensity.value = POST.heightFog.density;
+    },
+    setFogSpeed(v) {
+      POST.heightFog.speed = Math.max(0, v);
+      passes.ssaoFog.material.uniforms.uFogSpeed.value = POST.heightFog.speed;
+    },
+    setFogHeightFalloff(v) {
+      POST.heightFog.heightFalloff = Math.max(0.05, v);
+      passes.ssaoFog.material.uniforms.uFogHeightFalloff.value = POST.heightFog.heightFalloff;
+    },
+    setFogColors(baseColor, sunTint) {
+      if (baseColor !== undefined) {
+        POST.heightFog.color = baseColor;
+        passes.ssaoFog.material.uniforms.uFogColor.value.set(baseColor);
+      }
+      if (sunTint !== undefined) {
+        POST.heightFog.sunTint = sunTint;
+        passes.ssaoFog.material.uniforms.uFogSunTint.value.set(sunTint);
+      }
+    },
+    setDofScale(v) {
+      state.dofScale = Math.max(0, v);
+      dofUniforms.uMaxBlurPx.value = dofMaxBlurPx();
+    },
     setFocusDistance(d) {
       state.focusDistance = Math.max(0.1, d);
       dofUniforms.uFocusDistance.value = state.focusDistance;
     },
-    /** 关掉「焦点锁站房」时用手动焦平面（调校 / 复现特定构图） */
     setFollowFocusTarget(v) {
       state.followFocusTarget = !!v;
     },
@@ -340,7 +417,6 @@ export function createPostPipeline(renderer, scene, camera) {
       POST.dof.maxBlurPx = v;
       dofUniforms.uMaxBlurPx.value = dofMaxBlurPx();
     },
-    /** 前景 / 远景虚化强度分别可调（AGENT.md：前景「微失焦」、远景「轻微虚化」） */
     setDofWeights(nearWeight, farWeight) {
       POST.dof.nearWeight = nearWeight;
       POST.dof.farWeight = farWeight;
@@ -383,7 +459,6 @@ export function createPostPipeline(renderer, scene, camera) {
       POST.outline.edgeStrength = v;
       passes.edge.material.uniforms.uStrength.value = v;
     },
-    /** 深度边缘这一路的近 / 远权重（远处只收细不关掉） */
     setEdgeWeights(nearWeight, farWeight) {
       POST.outline.edgeNearWeight = nearWeight;
       POST.outline.edgeFarWeight = farWeight;
@@ -394,9 +469,7 @@ export function createPostPipeline(renderer, scene, camera) {
       POST.outline.edgeThreshold = v;
       passes.edge.material.uniforms.uThreshold.value = v;
     },
-    /** 距离拐点与反向壳体同步（OUTLINE 是单一来源） */
     setEdgeDistanceRange(nearDistance, farDistance) {
-      // 必须同时改反向壳体：只改这一路会出现「壳体还在、边缘检测先掉线」的半截描边
       setOutlineDistanceRange(nearDistance, farDistance);
       passes.edge.material.uniforms.uNearDistance.value = nearDistance;
       passes.edge.material.uniforms.uFarDistance.value = farDistance;

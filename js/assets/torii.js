@@ -2,11 +2,13 @@
  * 朱红明神鸟居（PATH_SYSTEM.toriiFront / toriiRear）
  *
  * 两座同规格鸟居由同一个工厂产出：各自独立根 Group、独立 Mesh、独立材质实例。
- * 1:1 对照参考图（ref/20261102-170814.jpg）校准：
+ * 1:1 对照参考图（ref/20261102-170814.jpg）校准并升级第二优先级细节：
  * - 笠木（kasagi）与眉木（nimaki）：黑漆反り弧形顶梁，两端微翘；
- * - 島木（shimaki）、貫（nuki）、額束（gakuzuka）、柱（post）：全套鲜明朱红漆（T.lacquer / T.post）；
- * - 島木与貫之间仅中央设一根窄长朱红額束（与背撑束合一），两侧完全通透（无侧束遮挡林间背景）；
- * - 柱身正面带竖向深色雨水冲刷墨痕与局部斑驳木纹，柱脚配低矮根巻与青苔台石。
+ * - 島木（shimaki）、貫（nuki）、額束（gakuzuka）、柱（post）：全套风化朱红漆（T.lacquer / T.post），
+ *   带木纹磨损、微粗糙度不均匀高光与根部/榫缝青苔遮罩；
+ * - 貫（下横梁）正面悬挂立体多股扭编日式注连绳（しめ縄 shimenawa）与 5 挂 Z 字折纸垂（紙垂 shide），
+ *   纸垂与草穗带独立枢轴 Group（branchSway），随山林微风轻柔低速摆动；
+ * - 柱身正面带竖向深色雨水冲刷墨痕与局部斑驳木纹，柱脚配低矮根巻与覆苔台石。
  */
 import * as THREE from 'three';
 import { TORII, toriiBaseY } from '../layout.js';
@@ -220,7 +222,7 @@ function nukiMossStrip(name, material, xCenter) {
   return m;
 }
 
-function nukiWedges(T) {
+function nukiWedges(T, mossMat) {
   const g = group('kusabi-group');
   const yCenter = (P.nuki.y0 + P.nuki.y1) / 2;
   for (const px of [P.post.x, -P.post.x]) {
@@ -233,6 +235,18 @@ function nukiWedges(T) {
       w.castShadow = true;
       w.receiveShadow = true;
       g.add(w);
+    }
+    // 柱与贯交接榫眼缝隙处的深山潮湿青苔垫
+    if (mossMat) {
+      const mGeo = new THREE.BoxGeometry(0.46, 0.032, P.nuki.depth + 0.04);
+      triplanarUv(mGeo, SMALL_TILE, [px, P.nuki.y1 + 0.015, 0]);
+      const mPad = mesh(mGeo, mossMat, `joint-moss-${px > 0 ? 'r' : 'l'}`);
+      mPad.position.set(px, P.nuki.y1 + 0.015, 0);
+      mPad.castShadow = false;
+      mPad.receiveShadow = true;
+      mPad.userData.noCast = true;
+      mPad.userData.noOutline = true;
+      g.add(mPad);
     }
   }
   return g;
@@ -286,6 +300,166 @@ function gakuzuka(T) {
   return g;
 }
 
+/**
+ * 单挂日式折纸「紙垂（しで）」：
+ * 原点设在注连绳下缘挂点处，由 4 折 Z 字雷纹纸片构成，挂有 branchSway 以随微风轻柔摆动。
+ */
+function buildSingleShide(name, shideMat, x, y, z, scale, rand) {
+  const pivot = group(name);
+  pivot.position.set(x, y, z);
+
+  // 4 段 Z 字形阶梯折纸片（稻妻/雷纹造型）
+  const folds = [
+    { dx: 0.0, dy: -0.042, dz: 0.004, w: 0.052, h: 0.088, rz: 0.14, rx: 0.06 },
+    { dx: 0.024, dy: -0.105, dz: 0.008, w: 0.058, h: 0.092, rz: -0.22, rx: -0.05 },
+    { dx: -0.012, dy: -0.172, dz: 0.012, w: 0.064, h: 0.098, rz: 0.20, rx: 0.06 },
+    { dx: 0.018, dy: -0.248, dz: 0.015, w: 0.072, h: 0.112, rz: -0.16, rx: -0.04 }
+  ];
+
+  folds.forEach((f, idx) => {
+    const geo = new THREE.BoxGeometry(f.w * scale, f.h * scale, 0.006);
+    triplanarUv(geo, SMALL_TILE, [x + f.dx, y + f.dy, z]);
+    const flap = mesh(geo, shideMat, `${name}-flap-${idx}`);
+    flap.position.set(f.dx * scale, f.dy * scale, f.dz * scale);
+    flap.rotation.set(f.rx, (rand() - 0.5) * 0.08, f.rz);
+    flap.castShadow = true;
+    flap.receiveShadow = true;
+    pivot.add(flap);
+  });
+
+  // 绑定微风低速摆动参数（由 tree-sway 统一驱动）
+  pivot.userData.branchSway = {
+    phase: rand() * Math.PI * 2,
+    period: 3.1 + rand() * 1.2,
+    amplitude: 0.032,
+    anchor: new THREE.Vector3(0, 0, 0)
+  };
+  return pivot;
+}
+
+/**
+ * 横梁（貫 nuki）处的日式注连绳（しめ縄）与纸垂（紙垂）装饰组件：
+ * - 双股螺旋拧结的悬链线稻草绳（中间浑厚饱满，向两侧立柱收束并扎结）
+ * - 3 处草绳束结与两端垂穗
+ * - 5 挂随风轻摆的白色奉书纸纸垂
+ */
+function buildShimenawa(T, rand) {
+  const g = group('shimenawa-group');
+  const spanHalf = P.post.x - 0.12; // 1.68 m，两端紧箍在左右立柱内侧
+  const baseY = P.nuki.y1 - 0.04;   // 2.78 m，沿贯（下横梁）正面上沿悬挂
+  const baseZ = P.nuki.depth / 2 + 0.052;
+  const sag = 0.13;
+  const samples = 32;
+
+  // 双股拧绳：沿悬链线互相螺旋缠绕，利用圆柱截面扫掠形成中段粗、两端细的注连绳本体
+  for (let strand = 0; strand < 2; strand++) {
+    const phase0 = strand * Math.PI;
+    const pts = [];
+    for (let i = 0; i <= samples; i++) {
+      const u = i / samples;
+      const x = -spanHalf + u * (spanHalf * 2);
+      const tNorm = x / spanHalf; // [-1, 1]
+      const catenaryY = baseY - sag * (1 - tNorm * tNorm);
+      const envelope = Math.sin(u * Math.PI); // 中央最粗，两端收细
+      const twistAngle = u * Math.PI * 14 + phase0;
+      const twistR = 0.018 * (0.45 + 0.55 * envelope);
+      pts.push(new THREE.Vector3(
+        x,
+        catenaryY + Math.sin(twistAngle) * twistR,
+        baseZ + Math.cos(twistAngle) * twistR + 0.012 * envelope
+      ));
+    }
+    const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5);
+    const tubeGeo = new THREE.TubeGeometry(curve, 36, 0.036, 8, false);
+    // 将中段顶点沿法线适度外扩，呈现传统「大根注連」中腹饱满鼓起的立体造型
+    const pos = tubeGeo.getAttribute('position');
+    const nrm = tubeGeo.getAttribute('normal');
+    for (let k = 0; k < pos.count; k++) {
+      const vx = pos.getX(k);
+      const swell = Math.max(0, 1 - (vx / spanHalf) ** 2);
+      const extra = swell * 0.024;
+      pos.setXYZ(
+        k,
+        vx + nrm.getX(k) * extra * 0.25,
+        pos.getY(k) + nrm.getY(k) * extra,
+        pos.getZ(k) + nrm.getZ(k) * extra
+      );
+    }
+    tubeGeo.computeVertexNormals();
+    triplanarUv(tubeGeo, SMALL_TILE, [0, baseY, baseZ]);
+    const ropeMesh = mesh(tubeGeo, T.shimenawa, `shimenawa-strand-${strand}`);
+    ropeMesh.castShadow = true;
+    ropeMesh.receiveShadow = true;
+    g.add(ropeMesh);
+  }
+
+  // 两端立柱捆扎绳箍与中央绳结
+  for (const [tag, kx, rKnot] of [['left', -spanHalf + 0.06, 0.048], ['center', 0, 0.068], ['right', spanHalf - 0.06, 0.048]]) {
+    const tNorm = kx / spanHalf;
+    const ky = baseY - sag * (1 - tNorm * tNorm);
+    const knot = taperedCylinder(`shimenawa-knot-${tag}`, T.shimenawa, {
+      x: kx,
+      y: ky,
+      z: baseZ + 0.008,
+      height: 0.095,
+      rBottom: rKnot,
+      rTop: rKnot * 0.94,
+      segments: 12,
+      tiltZ: Math.PI / 2
+    });
+    triplanarUv(knot.geometry, SMALL_TILE, [kx, ky, baseZ]);
+    knot.castShadow = true;
+    knot.receiveShadow = true;
+    g.add(knot);
+  }
+
+  // 绳中段 3 束下垂草穗（の子 / わら房）
+  const tasselPositions = [-0.86, 0.0, 0.86];
+  tasselPositions.forEach((tx, idx) => {
+    const tNorm = tx / spanHalf;
+    const ty = baseY - sag * (1 - tNorm * tNorm) - 0.03;
+    const tasselPivot = group(`shimenawa-tassel-${idx}`);
+    tasselPivot.position.set(tx, ty, baseZ + 0.006);
+    const tassel = taperedCylinder(`shimenawa-tassel-mesh-${idx}`, T.shimenawa, {
+      x: 0,
+      y: -0.085,
+      z: 0,
+      height: 0.17,
+      rBottom: 0.026,
+      rTop: 0.012,
+      segments: 10
+    });
+    triplanarUv(tassel.geometry, SMALL_TILE, [tx, ty - 0.085, baseZ]);
+    tassel.castShadow = true;
+    tassel.receiveShadow = true;
+    tasselPivot.add(tassel);
+    tasselPivot.userData.branchSway = {
+      phase: rand() * Math.PI * 2,
+      period: 3.6 + rand() * 1.2,
+      amplitude: 0.022,
+      anchor: new THREE.Vector3(0, 0, 0)
+    };
+    g.add(tasselPivot);
+  });
+
+  // 5 挂神圣白纸垂（しで），沿注连绳下缘对称错落排布
+  const shideOffsets = [
+    { x: -1.18, scale: 0.88 },
+    { x: -0.58, scale: 0.96 },
+    { x: 0.0, scale: 1.06 },
+    { x: 0.58, scale: 0.96 },
+    { x: 1.18, scale: 0.88 }
+  ];
+  shideOffsets.forEach((item, idx) => {
+    const tNorm = item.x / spanHalf;
+    const sy = baseY - sag * (1 - tNorm * tNorm) - 0.038;
+    const sz = baseZ + 0.024 + (1 - tNorm * tNorm) * 0.01;
+    g.add(buildSingleShide(`shide-${idx}`, T.shide, item.x, sy, sz, item.scale, rand));
+  });
+
+  return g;
+}
+
 export function createTorii(M, options = {}) {
   const id = options.id ?? 'front';
   const pair = TORII.pair.find((t) => t.id === id) ?? TORII.pair[0];
@@ -311,9 +485,12 @@ export function createTorii(M, options = {}) {
     thickness: P.nuki.height,
     topY: P.nuki.y1
   }));
-  root.add(nukiWedges(T));
+  root.add(nukiWedges(T, M.mossWet));
   root.add(nukiMossStrip('nuki-moss-a', T.deep, MOSS_STRIP.xCenter));
   root.add(nukiMossStrip('nuki-moss-b', T.deep, -MOSS_STRIP.xCenter));
+
+  // 横梁（貫）悬挂注连绳与随风摆动的纸垂装饰
+  root.add(buildShimenawa(T, rand));
 
   const shimaki = mesh(shimakiGeometry(), T.lacquer, 'shimaki');
   shimaki.castShadow = true;

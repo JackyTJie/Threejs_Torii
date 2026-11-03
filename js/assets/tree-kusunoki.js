@@ -4,7 +4,7 @@
 import { TREES, terrainHeight } from '../layout.js';
 import { group, rng, leafBladeGeometry } from '../primitives.js';
 import {
-  makeSpine, buildTrunk, buildBranches, buildCrownClusters, treeNeighbours, SPECIES_REACH
+  makeSpine, buildTrunk, buildBranches, buildCrownClusters, treeNeighbours, SPECIES_REACH, GOLDEN
 } from '../tree-kit.js';
 
 export const KUSUNOKI_MODEL = { canopyRadius: 2.8, canopyBottom: 3.8, height: 10.6, trunkRadius: 0.30 };
@@ -88,9 +88,10 @@ export function createKusunokiTree(M, options = {}) {
 
   root.add(buildTrunk(D, spine, mats.bark, mats.flareMat, mats.flakeMat, mats.mossMat, rand));
 
+  const rotY = treeRotationY(seed);
   const { branches, clusterIndex } = buildBranches(
     D, spine, mats.bark, mats.leafMats, leafGeos, rand,
-    avoidFor(options.x, options.z, treeRotationY(seed))
+    avoidFor(options.x, options.z, rotY)
   );
   for (const branch of branches) root.add(branch);
   for (const crown of buildCrownClusters(D, mats.leafMats, leafGeos, rand, clusterIndex)) root.add(crown);
@@ -102,7 +103,7 @@ export function createKusunokiTree(M, options = {}) {
   root.userData.treeHeight = KUSUNOKI_MODEL.height * scale;
 
   if (options.x !== undefined && options.z !== undefined) {
-    placeTree(root, options.x, options.z, scale, treeRotationY(seed));
+    placeTree(root, options.x, options.z, scale, rotY, rand);
   }
   return root;
 }
@@ -128,13 +129,19 @@ export function createKusunokiGrove(M) {
   return root;
 }
 
-function placeTree(root, x, z, scale, rotY) {
+function placeTree(root, x, z, scale, rotY, rand) {
   root.position.set(x, terrainHeight(x, z) - D.sink * scale, z);
-  root.rotation.y = rotY;
+  root.rotation.set(
+    (rand() - 0.5) * 0.032,
+    rotY,
+    (rand() - 0.5) * 0.032
+  );
 }
 
+/** 黄金角无理数分布 + 确定性伪随机扰动，彻底杜绝树木朝向生硬统一 */
 function treeRotationY(seed) {
-  return (seed % 9) * 0.7;
+  const r = rng(seed * 31 + 7)();
+  return ((seed * GOLDEN) + r * 1.25) % (Math.PI * 2);
 }
 
 function avoidFor(x, z, rotY) {

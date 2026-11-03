@@ -74,6 +74,13 @@ export function tuneMaterial(material, key, value) {
   return true;
 }
 
+/** 收集所有挂有光照方向 uniform 的材质，供昼夜切换系统实时同步主光源方向与色温 */
+export const SUN_LINKED_MATERIALS = [];
+
+function registerSunMaterial(material) {
+  if (!SUN_LINKED_MATERIALS.includes(material)) SUN_LINKED_MATERIALS.push(material);
+}
+
 export function applyLeafTranslucency(material, { color = 0x9fd6a0, strength = 0.4, power = 2.6 } = {}) {
   const sun = sunDirectionVector();
   const uniforms = bindUniforms(material, {
@@ -96,6 +103,7 @@ export function applyLeafTranslucency(material, { color = 0x9fd6a0, strength = 0
     material.userData.shader = shader;
   });
   material.name = material.name || 'leafToon';
+  registerSunMaterial(material);
   return material;
 }
 
@@ -116,27 +124,39 @@ export function applyMossAttachment(material, { color = PALETTE.moss, height = 0
       }`);
     material.userData.shader = shader;
   });
+  registerSunMaterial(material);
   return material;
 }
 
-export function applyWeathering(material, { wear = PALETTE.toriiLacquerLoss, dust = PALETTE.soilWet, start = 0, band = 0.6, wearAmount = 0.5, dustAmount = 0.22 } = {}) {
+export function applyWeathering(material, {
+  wear = PALETTE.toriiLacquerLoss,
+  dust = PALETTE.soilWet,
+  start = 0,
+  band = 0.6,
+  wearAmount = 0.5,
+  dustAmount = 0.22,
+  roughnessVar = 0.16
+} = {}) {
   const uniforms = bindUniforms(material, {
     uWearColor: { value: new THREE.Color(wear) },
     uDustColor: { value: new THREE.Color(dust) },
     uWearStart: { value: start },
     uWearBand: { value: band },
     uWearAmount: { value: wearAmount },
-    uDustAmount: { value: dustAmount }
+    uDustAmount: { value: dustAmount },
+    uRoughnessVar: { value: roughnessVar },
+    uSpecSunDir: { value: sunDirectionVector() }
   });
   composeBeforeCompile(material, (shader) => {
     Object.assign(shader.uniforms, uniforms);
     injectWorldPosition(shader);
     injectGlobals(shader, `${WEATHERING_UNIFORMS}\n${WEATHERING_FRAG}`);
     injectSurface(shader, `{
-        outgoingLight = applyWeathering( outgoingLight, vStationWorldPos, normal );
+        outgoingLight = applyWeathering( outgoingLight, vStationWorldPos, normal, normalize( vViewPosition ) );
       }`);
     material.userData.shader = shader;
   });
+  registerSunMaterial(material);
   return material;
 }
 
@@ -231,6 +251,7 @@ export function applySubmergedCaustics(material) {
   });
   material.userData.submergedCaustics = true;
   if (!RIVERBED_CAUSTIC_MATERIALS.includes(material)) RIVERBED_CAUSTIC_MATERIALS.push(material);
+  registerSunMaterial(material);
   return material;
 }
 
@@ -295,6 +316,7 @@ export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength
   });
   material.userData.waterFlow = true;
   if (!WATER_FLOW_MATERIALS.includes(material)) WATER_FLOW_MATERIALS.push(material);
+  registerSunMaterial(material);
   return material;
 }
 
