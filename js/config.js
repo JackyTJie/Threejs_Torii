@@ -95,12 +95,12 @@ export const PALETTE = {
   stoneLight: 0x6a767c,
   stoneWet: 0x3f484c,
 
-  // 水体：清澈幽暗山涧溪水，透出底部湿泥卵石，局部泛起翠绿波光与柔和瀑沫（绝不刺眼像镜子）
+  // 水体：澄澈透底的山间清溪色阶（透出溪底湿泥卵石，微泛冷翠折射色）
   streamBed: 0x26201a,
   streamSand: 0x362e25,
-  water: 0x1a362d,
-  waterShallow: 0x2d5446,
-  waterDeep: 0x0e211b,
+  water: 0x1c3d33,
+  waterShallow: 0x386b5a,
+  waterDeep: 0x0d211b,
 
   // 远山森林天穹 / 雾 / 描边（以幽深森林群山替代空白灰白天空）
   skyTop: 0x3b5446,
@@ -155,11 +155,11 @@ export const LIGHT = {
 };
 
 /**
- * 受限观景相机（支持在参道旁侧观察 + 受限横向/纵向平移空间）：
- * 默认机位设在参道左侧溪谷畔（azimuth 98.8°，相机位于 x ≈ -2.55, z ≈ 14.4），
- * 从路旁斜向望向弧形拾级而上的石阶、双鸟居及向右绕入山后的上段山路，完美复现参考图构图！
- * 同时放宽水平旋转至 [45°, 135°] 并开启受限横向/纵向平移（panLimitX / panLimitZ），
- * 支持用户在路旁、溪畔与林间横向移动观察。
+ * 受限观景相机（支持在参道旁侧观察 + 严格锁死后退边界防止超模穿帮）：
+ * - 默认机位设在参道左侧溪谷畔（azimuth 98.8°，相机位于 x ≈ -2.50, z ≈ 14.42），
+ *   恰好处于前端石阶入口与前景画框树干内侧；
+ * - 向后运动严格锁死：radiusMax 锁死为 15.6，panZMax 锁死为 0.0（仅允许向前深入参道至 panZMin = -4.2，
+ *   后退到入口即硬性锁死），且相机眼点世界坐标强制约束在 bounds 内（z <= 14.65），绝不退到前景林木外或底座边缘外。
  */
 export const CAMERA = {
   fov: 45,
@@ -168,20 +168,30 @@ export const CAMERA = {
   target: { x: -0.15, y: 4.25, z: -0.8 },
   radius: 15.4,
   radiusMin: 3.2,
-  radiusMax: 46,
+  radiusMax: 15.6, // 严格锁死最远视距，禁止拉远穿出前景树林与底座边界
   azimuthDeg: 98.8, // 位于参道左侧溪畔旁观，而非死板正中对称视角
-  azimuthMin: 45, // 放宽左右横向观察角度（±45°），禁止转到场景背面
-  azimuthMax: 135,
+  azimuthMin: 55, // 限制在林间围合视角内观察，避免侧转露出林外
+  azimuthMax: 128,
   elevationDeg: 1.2,
   elevationMin: -10,
   elevationMax: 45,
   damping: 6.5,
   zoomSpeed: 0.0011,
   dragSpeed: 0.0055,
-  panEnabled: true, // 开启受限范围内横向/纵向平移，允许在路旁自由观察
+  panEnabled: true,
   panSpeed: 0.012,
-  panLimitX: 3.8,
-  panLimitZ: 4.5,
+  panLimitXMin: -1.5, // 向左最多移至溪谷西岸内侧
+  panLimitXMax: 2.3, // 向右最多移至参道右侧坡脚内侧
+  panLimitZMin: -4.2, // 向前最多深入至鸟居下方台阶处
+  panLimitZMax: 0.0, // 向后严格锁死在初始石阶底端入口（0.0），严禁后退超模！
+  panLimitX: 2.3,
+  panLimitZ: 4.2,
+  bounds: {
+    xMin: -4.3,
+    xMax: 3.2,
+    zMin: -0.5,
+    zMax: 14.65
+  },
   collideWithScene: false
 };
 
