@@ -1,13 +1,10 @@
-// 山涧蜿蜒叠瀑溪流（方法一：基于 CatmullRomCurve3 样条曲线 + 真实物理模拟粒子流体系统 + TubeGeometry 瀑布急流管）：
-// 1) 三维样条曲线流道（createStreamSplineCurve）：
-//    利用 THREE.CatmullRomCurve3 构建沿山谷蜿蜒曲折且含 6 级叠瀑高差的三维流体主轴曲线；
-// 2) 曲线流管瀑布急流（TubeGeometry Jets & Cascade Ribbons）：
-//    在 6 级小瀑布跌水段沿 CatmullRomCurve3 子样条生成多股三维流管（TubeGeometry）与水舌；
-// 3) 真实拉格朗日物理流体粒子系统（Lagrangian Fluid Particles & Splash System）：
-//    包含 1,080 颗顺流推进的溪流流体微粒（streamWater-particles）与 360 颗瀑布跌水飞沫微粒（streamWater-splash），
-//    在 animations/stream-flow.js 中实时解算：样条切向平流 + 瀑布重力加速 + 溪石/石堰障碍物碰撞反射与卡门涡街绕流；
-// 4) 澄澈见底的水下河床（streamBed）：
-//    深褐湿泥沙底 + 6 级叠水石堰 + 冲刷砾石滩 + 140 颗水下鹅卵石 + 48 片沉水红叶，全部受实时斯涅尔折射焦散照亮。
+// 山涧蜿蜒叠瀑溪流（方法二 + 方法一融合：二维浅水方程 SWE 高密度位移网格 + 深度折射透底 + 实时水底焦散 + 样条物理飞沫粒子）：
+// 1) 高密度浅水方程水面网格（WATER_COLS = 25, SAMPLE_PITCH = 0.09）：
+//    在顶点着色器采样 SWE 模拟纹理（uSweTex.r）做真实 Y 轴波浪位移，并由中心差分实时计算法线；
+// 2) 柔化羽化的 6 级小瀑布水帘与拉格朗日物理飞沫粒子（CatmullRomCurve3 + Splash Particles）：
+//    彻底告别生硬圆柱管与死白点阵，只在瀑布跌水处与撞石尾流处呈现半透明丝状水花与微粒；
+// 3) 清可见底、澄澈透亮的河床（streamBed）：
+//    深褐湿泥沙底 + 6 级天然叠水石堰 + 冲刷砾石条 + 140 颗溪底鹅卵石 + 48 片水下红叶，全部受斯涅尔折射焦散照亮。
 import * as THREE from 'three';
 import { group, leafSheetGeometry, mesh, place, rng, rockGeometry, triplanarUv } from '../primitives.js';
 import {
@@ -26,14 +23,14 @@ import {
 
 const Z_START = -CONTENT_HALF;
 const Z_END = CONTENT_HALF;
-const SAMPLE_PITCH = 0.11;
+const SAMPLE_PITCH = 0.09;
 const SEARCH_STEP = 0.04;
 const SEARCH_OUTER = 2.4;
 const BISECT_ITER = 24;
 const MIN_WATER_WIDTH = 0.12;
 const RUN_GAP = 0.6;
 
-const WATER_COLS = 19;
+const WATER_COLS = 25;
 const WATER_RATIOS = [];
 for (let c = 0; c < WATER_COLS; c++) WATER_RATIOS.push(1 - (2 * c) / (WATER_COLS - 1));
 const WATER_UV_TILE = 2.2;
@@ -49,17 +46,14 @@ const PEBBLE_TILE = 0.16;
 const BAR_COUNT = 12;
 const SUNKEN_LEAF_COUNT = 48;
 
-export const STREAM_PARTICLE_COUNT = 1080;
-export const STREAM_SPLASH_COUNT = 360;
+export const STREAM_PARTICLE_COUNT = 720;
+export const STREAM_SPLASH_COUNT = 320;
 
 /* ------------------------------------------------------------------ 三维样条曲线（CatmullRomCurve3）与障碍物场 */
 
 let cachedCurve = null;
 let cachedObstacles = null;
 
-/**
- * 构建沿山涧中心线蜿蜒曲折并包含 6 级瀑布跌水高差的 THREE.CatmullRomCurve3 样条曲线。
- */
 export function getStreamSplineCurve() {
   if (cachedCurve) return cachedCurve;
   const pts = [];
@@ -77,10 +71,6 @@ export function getStreamSplineCurve() {
   return cachedCurve;
 }
 
-/**
- * 汇总溪流内所有物理碰撞障碍物（8 块主溪石 STREAM_STONES + 6 级瀑布共 24 块叠水石堰），
- * 供物理粒子流体与浅水方程绕流使用。
- */
 export function getStreamObstacles() {
   if (cachedObstacles) return cachedObstacles;
   const list = [];
@@ -246,72 +236,84 @@ function addPlanarUv(geo, tileMeters) {
   return geo;
 }
 
-/* ------------------------------------------------------------------ 曲线流管（TubeGeometry）与物理粒子流体系统 */
+/* ------------------------------------------------------------------ 柔化羽化的 6 级小瀑布水舌与拉格朗日物理流体微粒 */
 
-/**
- * 沿着每级小瀑布的 CatmullRomCurve3 子样条生成多股流管水束（TubeGeometry）与柔和水舌
- */
-function buildCurveCascadeTubes(root, M, rand) {
+function buildFeatheredCascadeSheets(root, M) {
   let count = 0;
   const foamMat = M.waterfallFoam || M.waterSurface;
 
   STREAM_CASCADES.forEach((cas, cIdx) => {
-    const zTop = cas.z - cas.halfSpan * 0.78;
-    const zBot = cas.z + cas.halfSpan * 0.85;
-    const halfW = streamBankHalf(cas.z) * 0.66;
+    const zTop = cas.z - cas.halfSpan * 0.72;
+    const zBot = cas.z + cas.halfSpan * 0.78;
+    const yTop = waterY(zTop) + 0.003;
+    const yBot = waterY(zBot) + 0.004;
+    const cxTop = streamCenterX(zTop);
+    const cxBot = streamCenterX(zBot);
+    const halfW = streamBankHalf(cas.z) * 0.68;
 
-    // 1. 沿瀑布断面的 5 股 CatmullRomCurve3 跌水流管（TubeGeometry，避开中间堰石缝隙穿流而下）
-    const streamOffsets = [-0.62, -0.32, 0.0, 0.34, 0.62];
-    streamOffsets.forEach((latRatio, sIdx) => {
-      const curvePts = [];
-      const steps = 8;
-      for (let k = 0; k <= steps; k++) {
-        const u = k / steps;
-        const z = lerp(zTop, zBot, u);
-        const dropCurve = Math.pow(u, 1.45);
-        const arch = Math.sin(u * Math.PI) * 0.028;
-        const y = lerp(waterY(zTop), waterY(zBot), dropCurve) + arch + 0.005;
-        const wobbleX = Math.sin(u * Math.PI * 2 + sIdx * 1.4) * 0.035;
-        const x = streamCenterX(z) + latRatio * halfW + wobbleX;
-        curvePts.push(new THREE.Vector3(x, y, z));
+    const cols = 16;
+    const rows = 10;
+    const pos = [];
+    const uv = [];
+    const idx = [];
+    for (let r = 0; r <= rows; r++) {
+      const u = r / rows;
+      const z = lerp(zTop, zBot, u);
+      const dropCurve = Math.pow(u, 1.46);
+      const arch = Math.sin(u * Math.PI) * 0.022;
+      const yBase = lerp(yTop, yBot, dropCurve) + arch;
+      const cx = lerp(cxTop, cxBot, u);
+      const w = halfW * 2 * (0.9 + 0.14 * Math.sin(u * Math.PI));
+
+      for (let c = 0; c <= cols; c++) {
+        const vn = c / cols;
+        const v = vn - 0.5;
+        const edgeTaper = Math.sin(vn * Math.PI);
+        const ribs = (0.5 + 0.5 * Math.sin(vn * Math.PI * 5 + cIdx * 1.3)) * 0.016 * edgeTaper;
+        const x = cx + v * w;
+        const dz = Math.sin(vn * Math.PI * 3 + u * 2.2) * 0.028 * edgeTaper;
+        pos.push(x, yBase + ribs, z + dz);
+        uv.push(vn, u);
       }
-      const subCurve = new THREE.CatmullRomCurve3(curvePts);
-      const radius = 0.028 + (sIdx % 2) * 0.012;
-      const tubeGeo = new THREE.TubeGeometry(subCurve, 14, radius, 6, false);
-      // 压扁流管形成自然水束截面
-      const pos = tubeGeo.getAttribute('position');
-      for (let i = 0; i < pos.count; i++) {
-        pos.setY(i, pos.getY(i));
+    }
+    const stride = cols + 1;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const a = r * stride + c;
+        const b = a + 1;
+        const d = (r + 1) * stride + c;
+        const e = d + 1;
+        idx.push(a, d, b, b, d, e);
       }
-      tubeGeo.computeVertexNormals();
-      const tube = mesh(tubeGeo, foamMat, `streamWater-tube-${cIdx}-${sIdx}`);
-      tube.castShadow = false;
-      tube.receiveShadow = false;
-      tube.userData.noCast = true;
-      tube.userData.noReceive = true;
-      tube.userData.noOutline = true;
-      tube.userData.cascadeCurtain = { phase: cIdx * 1.3 + sIdx * 0.7 };
-      root.add(tube);
-      count += 1;
-    });
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+
+    const curtain = mesh(geo, foamMat, `streamWater-cascade-${cIdx}`);
+    curtain.castShadow = false;
+    curtain.receiveShadow = false;
+    curtain.userData.noCast = true;
+    curtain.userData.noReceive = true;
+    curtain.userData.noOutline = true;
+    curtain.userData.cascadeCurtain = { phase: cIdx * 1.7 };
+    root.add(curtain);
+    count += 1;
   });
 
   return count;
 }
 
-/**
- * 构建拉格朗日物理流体粒子系统（InstancedMesh）：
- * 1) streamWater-particles：1080 颗沿 CatmullRomCurve3 样条流线平流、遇石块绕流、遇瀑布加速跌落的水体流线微粒；
- * 2) streamWater-splash：360 颗在 6 级小瀑布落水潭与溪石迎水面激荡弹跳的飞沫微粒。
- */
 function buildFluidParticleSystem(root, M, rand) {
   const particleMat = M.waterParticle || M.waterfallFoam || M.waterSurface;
   const curve = getStreamSplineCurve();
   const obstacles = getStreamObstacles();
 
-  // 流线水滴微粒几何（沿流向拉长的低多边形椭球水滴）
-  const dropGeo = new THREE.IcosahedronGeometry(0.024, 1);
-  dropGeo.scale(0.75, 0.32, 2.4);
+  // 纤细透明的流线微粒（尺寸精巧，点缀急流与绕石尾迹，绝不遮挡清澈河床）
+  const dropGeo = new THREE.IcosahedronGeometry(0.014, 1);
+  dropGeo.scale(0.65, 0.28, 2.2);
 
   const flowInst = new THREE.InstancedMesh(dropGeo, particleMat, STREAM_PARTICLE_COUNT);
   flowInst.name = 'streamWater-particles';
@@ -333,11 +335,10 @@ function buildFluidParticleSystem(root, M, rand) {
     const half = Math.max(0.25, streamBankHalf(pt.z) * 0.72);
     const lat = (rand() * 2 - 1) * half;
     const speed = 0.048 + rand() * 0.036;
-    const scale = 0.65 + rand() * 0.85;
+    const scale = 0.55 + rand() * 0.75;
 
     let px = pt.x + lat;
     const pz = pt.z;
-    // 若初始落在溪石内部则推到石块外侧流线
     for (const ob of obstacles) {
       const dx = px - ob.x;
       const dz = pz - ob.z;
@@ -347,11 +348,11 @@ function buildFluidParticleSystem(root, M, rand) {
         px = ob.x + dx * push;
       }
     }
-    const py = waterY(pz) + 0.004;
+    const py = waterY(pz) + 0.003;
 
     dummy.position.set(px, py, pz);
     dummy.rotation.set(0, Math.atan2(tan.x, tan.z), 0);
-    dummy.scale.set(scale, scale, scale * (1 + speed * 4));
+    dummy.scale.set(scale, scale, scale * (1 + speed * 3.5));
     dummy.updateMatrix();
     flowInst.setMatrixAt(i, dummy.matrix);
 
@@ -374,9 +375,8 @@ function buildFluidParticleSystem(root, M, rand) {
   };
   root.add(flowInst);
 
-  // 瀑布落水潭与撞石飞沫粒子（360 颗物理抛体/涡流飞沫）
-  const splashGeo = new THREE.IcosahedronGeometry(0.018, 1);
-  splashGeo.scale(1.1, 0.55, 1.1);
+  const splashGeo = new THREE.IcosahedronGeometry(0.012, 1);
+  splashGeo.scale(1.0, 0.5, 1.0);
   const splashInst = new THREE.InstancedMesh(splashGeo, particleMat, STREAM_SPLASH_COUNT);
   splashInst.name = 'streamWater-splash';
   splashInst.castShadow = false;
@@ -392,9 +392,9 @@ function buildFluidParticleSystem(root, M, rand) {
     const halfW = streamBankHalf(cas.z) * 0.65;
     const ox = streamCenterX(cas.z) + (rand() * 2 - 1) * halfW;
     const oz = cas.z + (rand() - 0.25) * cas.halfSpan * 1.4;
-    const oy = waterY(oz) + 0.01 + rand() * 0.05;
+    const oy = waterY(oz) + 0.008 + rand() * 0.04;
     const life = rand();
-    const s = 0.5 + rand() * 0.9;
+    const s = 0.45 + rand() * 0.75;
 
     dummy.position.set(ox, oy, oz);
     dummy.rotation.set(0, rand() * Math.PI * 2, 0);
@@ -408,7 +408,7 @@ function buildFluidParticleSystem(root, M, rand) {
       speed: 0.8 + rand() * 0.9,
       latOffset: (rand() * 2 - 1) * halfW,
       vx: (rand() - 0.5) * 0.22,
-      vy: 0.28 + rand() * 0.35,
+      vy: 0.25 + rand() * 0.32,
       vz: 0.35 + rand() * 0.45,
       scale: s
     });
@@ -447,7 +447,7 @@ function mouthGeometry(st) {
 }
 
 /**
- * 山涧水面（含高密度澄澈主水面、CatmullRomCurve3 瀑布流管、拉格朗日物理流体粒子与飞沫系统）。
+ * 山涧水面（高密度 SWE 浅水方程位移网格 + 柔化羽化瀑布水舌 + 拉格朗日物理流体微粒）。
  */
 export function createStreamWater(M) {
   const root = group('streamWater');
@@ -495,7 +495,7 @@ export function createStreamWater(M) {
   });
 
   const rand = rng(8821);
-  meshCount += buildCurveCascadeTubes(root, M, rand);
+  meshCount += buildFeatheredCascadeSheets(root, M);
   meshCount += buildFluidParticleSystem(root, M, rand);
 
   root.userData.samples = samples;
@@ -534,9 +534,6 @@ function weirBoulderGeometry(radius, seed) {
   });
 }
 
-/**
- * 山涧溪床：深色湿泥砂底 + 6 级小瀑布天然叠石堰 + 冲刷砾石条 + 140 颗溪底鹅卵石 + 48 片水下沉叶。
- */
 export function createStreamBed(M) {
   const root = group('streamBed');
   root.userData.assetName = 'streamBed';
@@ -624,7 +621,7 @@ export function createStreamBed(M) {
     }
   });
 
-  // 3. 溪底深浅鹅卵石与河床碎石（透过清澈溪水与折射焦散清晰可见）
+  // 3. 溪底深浅鹅卵石与河床碎石
   const pebblesPerRun = runs.map((run) => Math.max(1, Math.round((PEBBLE_COUNT * run.length) / all.length)));
   let pebbleIndex = 0;
   runs.forEach((run, runIndex) => {

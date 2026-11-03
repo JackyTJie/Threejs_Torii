@@ -9,6 +9,8 @@ import { setOutlineDistanceRange } from './outline.js';
 import { DOF_GATHER_FS, DOF_COMPOSITE_FS } from './shaders/dof-shader.js';
 import { GRADE_FS } from './shaders/grade-shader.js';
 import { BRIGHT_FS, BLUR_FS, COMPOSITE_FS } from './shaders/bloom-shader.js';
+import { getSweSimulator } from './water/swe-simulator.js';
+import { RIVERBED_CAUSTIC_MATERIALS, WATER_FLOW_MATERIALS, tuneMaterial } from './toon.js';
 
 /**
  * 创建后处理管线。
@@ -215,6 +217,23 @@ export function createPostPipeline(renderer, scene, camera) {
     }
 
     try {
+      // 0) 阶段一 & 阶段三：推进 GPU 浅水方程（SWE）Ping-Pong 迭代 + 捕获水下河床深度与折射缓冲
+      const swe = getSweSimulator();
+      swe.resizeRefraction(width, height);
+      const sweTex = swe.step(renderer, elapsed);
+      const hasRefract = swe.captureRefraction(renderer, scene, camera);
+      for (const mat of WATER_FLOW_MATERIALS) {
+        tuneMaterial(mat, 'uSweTex', sweTex);
+        tuneMaterial(mat, 'tRefractionColor', swe.refractionColorTex);
+        tuneMaterial(mat, 'tRefractionDepth', swe.refractionDepthTex);
+        tuneMaterial(mat, 'uHasRefraction', hasRefract ? 1.0 : 0.0);
+        tuneMaterial(mat, 'uCameraNear', camera.near);
+        tuneMaterial(mat, 'uCameraFar', camera.far);
+      }
+      for (const mat of RIVERBED_CAUSTIC_MATERIALS) {
+        tuneMaterial(mat, 'uSweTex', sweTex);
+      }
+
       // 1) 场景 → 带深度的离屏缓冲
       renderer.setRenderTarget(targets.scene);
       renderer.clear();

@@ -1,6 +1,6 @@
-// 三渲二材质工具：渐变带、叶片透光、青苔附着、老化叠加、水底折射焦散、资产收尾（描边 + 阴影策略）
+// 三渲二材质工具：渐变带、叶片透光、青苔附着、老化叠加、SWE 浅水方程水体与水底实时焦散、资产收尾
 import * as THREE from 'three';
-import { TOON_BANDS, OUTLINE, PALETTE, LIGHT } from './config.js';
+import { TOON_BANDS, OUTLINE, PALETTE, LIGHT, CAMERA } from './config.js';
 import { sunDirection } from './lighting.js';
 import { gradientMap } from './textures.js';
 import {
@@ -10,24 +10,22 @@ import {
 } from './shaders/toon-shading.js';
 import { LEAF_FLUTTER_VERT, LEAF_FLUTTER_APPLY, LEAF_FLUTTER_UNIFORMS } from './shaders/leaf-vertex.js';
 import {
+  WATER_SWE_VERT_UNIFORMS, WATER_SWE_VERT_DISPLACE, WATER_SWE_VERT_CLIP,
   WATER_FLOW_FRAG, WATER_FLOW_UNIFORMS,
   RIVERBED_CAUSTICS_FRAG, RIVERBED_CAUSTICS_UNIFORMS
 } from './shaders/water-shader.js';
+import {
+  SWE_DOMAIN, SWE_TEX_HEIGHT, SWE_TEX_WIDTH, getSweSimulator
+} from './water/swe-simulator.js';
 import { STREAM_PATH } from './layout.js';
 import { outlineGroup, markNoOutline, shouldSkipOutline } from './outline.js';
 
-/**
- * 世界空间太阳光方向。
- * 直接转发 lighting.js —— 主光、叶片透光、青苔背阴、老化迎风面、光斑漂移、尘埃逆光
- * 必须共用同一个方向，改一次 LIGHT.sunAzimuthDeg 全部跟着走。
- */
 export function sunDirectionVector() {
   return sunDirection();
 }
 
 export const BANDS = TOON_BANDS;
 
-/** 给材质指定卡通色阶带（硬 / 中 / 软 / 平面） */
 export function setBanding(material, band = 'mid') {
   const steps = BANDS[band] || BANDS.mid;
   material.gradientMap = gradientMap(steps);
@@ -67,7 +65,6 @@ function bindUniforms(material, uniforms) {
   return uniforms;
 }
 
-/** 运行时微调已注入的 uniform */
 export function tuneMaterial(material, key, value) {
   const uniforms = material.userData.uniforms;
   if (!uniforms || !uniforms[key]) return false;
@@ -77,7 +74,6 @@ export function tuneMaterial(material, key, value) {
   return true;
 }
 
-/** 叶片次表面透光（逆光叶隙） */
 export function applyLeafTranslucency(material, { color = 0x9fd6a0, strength = 0.4, power = 2.6 } = {}) {
   const sun = sunDirectionVector();
   const uniforms = bindUniforms(material, {
@@ -103,7 +99,6 @@ export function applyLeafTranslucency(material, { color = 0x9fd6a0, strength = 0
   return material;
 }
 
-/** 青苔附着：仅在构件底部与背阴面出现，不泛滥 */
 export function applyMossAttachment(material, { color = PALETTE.moss, height = 0, band = 0.55, amount = 0.5 } = {}) {
   const uniforms = bindUniforms(material, {
     uMossColor: { value: new THREE.Color(color) },
@@ -124,7 +119,6 @@ export function applyMossAttachment(material, { color = PALETTE.moss, height = 0
   return material;
 }
 
-/** 统一老化规则：底部与迎风面优先老化，顶面轻微积尘 */
 export function applyWeathering(material, { wear = PALETTE.toriiLacquerLoss, dust = PALETTE.soilWet, start = 0, band = 0.6, wearAmount = 0.5, dustAmount = 0.22 } = {}) {
   const uniforms = bindUniforms(material, {
     uWearColor: { value: new THREE.Color(wear) },
@@ -146,7 +140,6 @@ export function applyWeathering(material, { wear = PALETTE.toriiLacquerLoss, dus
   return material;
 }
 
-/** 暗部抬升 / 明暗交界柔化：避免卡通分层在暗侧糊死 */
 export function applyShadowLift(material, { lift = 0.14, knee = 0.42 } = {}) {
   const uniforms = bindUniforms(material, {
     uShadowLift: { value: lift },
@@ -176,7 +169,6 @@ function composeBeforeCompile(material, inject) {
   };
 }
 
-/** 已启用 GPU 叶片微振的材质 */
 export const LEAF_FLUTTER_MATERIALS = [];
 
 export function applyLeafFlutter(material, { amplitude = 0.012, period = 3.4 } = {}) {
@@ -201,7 +193,6 @@ export function applyLeafFlutter(material, { amplitude = 0.012, period = 3.4 } =
   return material;
 }
 
-/** 溪流下游方向的水平单位向量 */
 export function streamFlowDirection() {
   const a = STREAM_PATH[0];
   const b = STREAM_PATH[STREAM_PATH.length - 1];
@@ -211,20 +202,23 @@ export function streamFlowDirection() {
   return new THREE.Vector2(dx / len, dz / len);
 }
 
-/** 已启用水流与水底折射焦散的材质（animations/stream-flow.js 逐帧推进时间） */
 export const WATER_FLOW_MATERIALS = [];
 export const RIVERBED_CAUSTIC_MATERIALS = [];
 
 /**
- * 水底折射焦散与水深比尔消光：注入到河床泥沙、砾石与溪石材质上，使焦散真正投射在水下河床表面。
+ * 阶段二：水底河床与鹅卵石实时斯涅尔折射焦散（绑定 SWE 高度图 uSweTex）
  */
 export function applySubmergedCaustics(material) {
   const sun = sunDirectionVector();
+  const sim = getSweSimulator();
   const uniforms = bindUniforms(material, {
     uCausticTime: { value: 0 },
     uCausticLightDir: { value: sun.clone() },
     uWaterAbsorbShallow: { value: new THREE.Color(PALETTE.waterShallow) },
-    uWaterAbsorbDeep: { value: new THREE.Color(PALETTE.waterDeep) }
+    uWaterAbsorbDeep: { value: new THREE.Color(PALETTE.waterDeep) },
+    uSweTex: { value: sim.texture },
+    uSweDomain: { value: new THREE.Vector4(SWE_DOMAIN.xMin, SWE_DOMAIN.xMax, SWE_DOMAIN.zMin, SWE_DOMAIN.zMax) },
+    uSweTexel: { value: new THREE.Vector2(1 / SWE_TEX_WIDTH, 1 / SWE_TEX_HEIGHT) }
   });
   composeBeforeCompile(material, (shader) => {
     Object.assign(shader.uniforms, uniforms);
@@ -241,9 +235,10 @@ export function applySubmergedCaustics(material) {
 }
 
 /**
- * 澄澈光学水面着色：无贴图、无点阵，纯粹基于菲涅尔反射与流线微澜。
+ * 阶段二 & 阶段三：二维浅水方程（SWE）顶点位移 + 深度缓冲消光（Depth Fade）+ 岸边与撞石泡沫
  */
 export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength = 1, overlayMode = 0 } = {}) {
+  const sim = getSweSimulator();
   const uniforms = bindUniforms(material, {
     uTime: { value: 0 },
     uFlowSpeed: { value: speed },
@@ -252,17 +247,36 @@ export function applyWaterFlow(material, { speed = 0.055, scale = 0.42, strength
     uDeepColor: { value: new THREE.Color(PALETTE.waterDeep) },
     uFlowScale: { value: scale },
     uFlowStrength: { value: strength },
-    uOverlayMode: { value: overlayMode }
+    uOverlayMode: { value: overlayMode },
+    uSweTex: { value: sim.texture },
+    uSweDomain: { value: new THREE.Vector4(SWE_DOMAIN.xMin, SWE_DOMAIN.xMax, SWE_DOMAIN.zMin, SWE_DOMAIN.zMax) },
+    uSweTexel: { value: new THREE.Vector2(1 / SWE_TEX_WIDTH, 1 / SWE_TEX_HEIGHT) },
+    uSweDisplaceScale: { value: overlayMode === 0 ? 1.15 : 0.0 },
+    tRefractionColor: { value: sim.refractionColorTex },
+    tRefractionDepth: { value: sim.refractionDepthTex },
+    uHasRefraction: { value: 0.0 },
+    uCameraNear: { value: CAMERA.near },
+    uCameraFar: { value: CAMERA.far },
+    uExtinctionDensity: { value: 3.2 },
+    uShoreFoamThreshold: { value: 0.052 }
   });
   composeBeforeCompile(material, (shader) => {
     Object.assign(shader.uniforms, uniforms);
     injectWorldPosition(shader);
     if (!shader.__waterLocalUv) {
       shader.__waterLocalUv = true;
-      shader.vertexShader = `varying vec2 vWaterLocalUv;\n${shader.vertexShader}`;
+      shader.vertexShader = `varying vec2 vWaterLocalUv;\n${WATER_SWE_VERT_UNIFORMS}\n${shader.vertexShader}`;
       shader.vertexShader = shader.vertexShader.replace(
         '#include <uv_vertex>',
         `#include <uv_vertex>\nvWaterLocalUv = uv;`
+      );
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>\n${WATER_SWE_VERT_DISPLACE}`
+      );
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <project_vertex>',
+        `#include <project_vertex>\n${WATER_SWE_VERT_CLIP}`
       );
       shader.fragmentShader = `varying vec2 vWaterLocalUv;\n${shader.fragmentShader}`;
     }

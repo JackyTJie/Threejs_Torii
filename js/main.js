@@ -1,8 +1,10 @@
 // 入口：全工程唯一使用 requestAnimationFrame 的模块。
 //
 // 这里只做四件事：建渲染器 / 场景 / 相机 / 灯光，把资产交给 scene-assembly 组装，
-// 然后每帧按固定顺序推进：相机 → 动画 → 后处理。任何建模、材质、动画参数都不在此处定义。
+// 挂载水面 Raycaster 实时物理交互波纹（点击或划过山涧水面激起 SWE 浅水方程扩散与绕石反弹波），
+// 然后每帧按固定顺序推进：相机 → 动画 → 后处理（含 SWE GPU Ping-Pong 迭代与深度折射通道）。
 // 画面里没有任何界面元素：不创建 DOM、不写文字、不加控件。
+import * as THREE from 'three';
 import { createRenderer, resizeRenderer, drawingBufferSize } from './renderer.js';
 import { createScene } from './scene.js';
 import { createCameraRig } from './camera.js';
@@ -12,6 +14,7 @@ import { assembleScene } from './scene-assembly.js';
 import { createPostPipeline } from './post-pipeline.js';
 import { outlinePixelScale, setOutlinePixelScale } from './outline.js';
 import { animationElapsed, stepAnimations } from './animations/registry.js';
+import { getSweSimulator } from './water/swe-simulator.js';
 
 /** 单帧最大步长：切后台 / 断点回来不补算大跳帧 */
 const MAX_FRAME_DELTA = 1 / 20;
@@ -30,16 +33,40 @@ export function createApp(canvas, options = {}) {
   const materials = createMaterialLibrary();
   const assembly = assembleScene(scene, materials, { animations: options.animations !== false });
   const post = createPostPipeline(renderer, scene, camera);
+  const swe = getSweSimulator();
+
+  // 阶段一.3：射线检测（Raycasting）交互输入机制 —— 鼠标划过或点击溪流时在 SWE 高度图写入瞬时水波冲量
+  const raycaster = new THREE.Raycaster();
+  const pointerNdc = new THREE.Vector2();
+  const waterRoot = assembly.assets.get('streamWater');
+
+  function triggerWaterRipple(clientX, clientY, strength) {
+    if (!waterRoot || !canvas) return;
+    const w = canvas.clientWidth || window.innerWidth || 1;
+    const h = canvas.clientHeight || window.innerHeight || 1;
+    pointerNdc.set((clientX / w) * 2 - 1, -(clientY / h) * 2 + 1);
+    raycaster.setFromCamera(pointerNdc, camera);
+    const hits = raycaster.intersectObject(waterRoot, true);
+    if (hits.length > 0) {
+      const p = hits[0].point;
+      swe.addDrop(p.x, p.z, strength, 0.45);
+    }
+  }
+
+  const onWaterPointerMove = (e) => {
+    triggerWaterRipple(e.clientX, e.clientY, 0.012);
+  };
+  const onWaterPointerDown = (e) => {
+    triggerWaterRipple(e.clientX, e.clientY, 0.026);
+  };
+  canvas.addEventListener('pointermove', onWaterPointerMove);
+  canvas.addEventListener('pointerdown', onWaterPointerDown);
 
   let rafId = 0;
   let lastTime = 0;
   let running = false;
   let frames = 0;
 
-  /**
-   * 描边的屏幕线宽依赖画面高度（world = px × dist / uPxScale）。
-   * 换窗口尺寸必须同步刷新像素尺度，保持描边锐利不断裂。
-   */
   function syncOutlinePixelScale() {
     const { height } = drawingBufferSize(renderer);
     setOutlinePixelScale(outlinePixelScale(height, camera.fov));
@@ -64,14 +91,14 @@ export function createApp(canvas, options = {}) {
   /** 推进一帧（离线工具 / 审计可直接调用，不必依赖 requestAnimationFrame） */
   function step(dt) {
     const seconds = Math.max(0, Math.min(MAX_FRAME_DELTA, Number.isFinite(dt) ? dt : 0));
-    // 1) 受限观景相机（阻尼 / 缩放耦合注视点 / 防穿地保护）
+    // 1) 受限观景相机（阻尼 / 缩放耦合注视点 / 后退防超模硬锁 / 防穿地保护）
     rig.update(seconds);
 
-    // 2) 动态效果（微风枝叶摇曳 / 溪流细碎涟漪 / 积水微澜 / 林间薄雾漂移）
+    // 2) 动态效果（微风枝叶摇曳 / 溪流 SWE 与拉格朗日粒子推进 / 积水微澜 / 林间薄雾漂移）
     const stepped = stepAnimations(seconds);
     if (stepped.errors.length) console.error('[animations]', stepped.errors.join(' | '));
 
-    // 3) 后处理：描边深度边缘 → 景深 → 辉光 → 合成 → 雨后深林电影级调色
+    // 3) 后处理：SWE 物理迭代 → 河床深度折射通道 → 描边深度边缘 → 景深 → 辉光 → 合成 → 调色
     post.render(animationElapsed());
     frames += 1;
   }
@@ -94,6 +121,8 @@ export function createApp(canvas, options = {}) {
   function dispose() {
     stop();
     window.removeEventListener('resize', onResize);
+    canvas.removeEventListener('pointermove', onWaterPointerMove);
+    canvas.removeEventListener('pointerdown', onWaterPointerDown);
     rig.dispose();
     post.dispose();
     renderer.dispose();
@@ -107,6 +136,7 @@ export function createApp(canvas, options = {}) {
     lighting,
     materials,
     post,
+    swe,
     assets: assembly.assets,
     animations: assembly.animations,
     stats: assembly.stats,
@@ -120,9 +150,7 @@ export function createApp(canvas, options = {}) {
     stop,
     dispose,
     resize: onResize,
-    /** 手动推进一帧（离线复现 / 审计用） */
     step,
-    /** 固定构图（审计 / 复现某一帧） */
     setView({ azimuthDeg, elevationDeg, radius }) {
       rig.setView({ azimuthDeg, elevationDeg, radius });
       rig.update(1);
